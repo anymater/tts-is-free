@@ -1,0 +1,573 @@
+'use strict';
+
+const http = require('node:http');
+const fs = require('node:fs');
+const fsp = fs.promises;
+const path = require('node:path');
+
+const PORT = Number.parseInt(process.env.PORT || '3000', 10) || 3000;
+const HOST = process.env.HOST || '127.0.0.1';
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+const FISH_URL = 'https://api.fish.audio/v1/tts';
+const MIMO_URL = 'https://api.xiaomimimo.com/v1/chat/completions';
+// Free-tier model. Change this constant if Fish Audio retires s2.1-pro-free.
+const FISH_MODEL = 's2.1-pro-free';
+const MIMO_DEFAULT_MODEL = 'mimo-v2.5-tts';
+
+const MAX_TEXT = 5000;
+const MAX_BODY = 2 * 1024 * 1024;
+const MAX_UPSTREAM_BYTES = 64 * 1024 * 1024;
+const UPSTREAM_TIMEOUT_MS = 180000;
+
+const SECURITY_HEADERS = {
+  'Content-Security-Policy':
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; " +
+    "media-src 'self' blob: data:; connect-src 'self'; font-src 'self'; object-src 'none'; " +
+    "base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+  'X-Frame-Options': 'DENY'
+};
+
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.webmanifest': 'application/manifest+json',
+  '.txt': 'text/plain; charset=utf-8'
+};
+
+const PAGE_ROUTES = {
+  '/': 'index.html',
+  '/index.html': 'index.html',
+  '/settings': 'settings.html',
+  '/settings.html': 'settings.html'
+};
+
+function sendJson(res, status, data) {
+  if (res.writableEnded) return;
+  const body = JSON.stringify(data);
+  res.writeHead(status, {
+    ...SECURITY_HEADERS,
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store'
+  });
+  res.end(body);
+}
+
+function sendText(res, status, body, contentType) {
+  if (res.writableEnded) return;
+  res.writeHead(status, {
+    ...SECURITY_HEADERS,
+    'Content-Type': contentType || 'text/plain; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store'
+  });
+  res.end(body);
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let tooLarge = false;
+
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BODY) {
+        tooLarge = true;
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (tooLarge) {
+        const err = new Error('payload_too_large');
+        err.statusCode = 413;
+        reject(err);
+        return;
+      }
+      if (!chunks.length) {
+        resolve(null);
+        return;
+      }
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch {
+        const err = new Error('invalid_json');
+        err.statusCode = 400;
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function getBearer(req) {
+  const auth = req.headers.authorization;
+  return typeof auth === 'string' && /^Bearer\s+\S+/.test(auth) ? auth : null;
+}
+
+async function readLimited(response, limit) {
+  const reader = response.body && response.body.getReader();
+  if (!reader) return '';
+  const decoder = new TextDecoder();
+  let out = '';
+  let received = 0;
+  try {
+    while (received < limit) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      out += decoder.decode(value, { stream: true });
+    }
+  } catch {
+    // Ignore read errors while extracting a diagnostic message.
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // Already closed.
+    }
+  }
+  return out.slice(0, limit);
+}
+
+async function readCappedBuffer(response, limit) {
+  const reader = response.body && response.body.getReader();
+  if (!reader) return Buffer.alloc(0);
+
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        const err = new Error('upstream_too_large');
+        err.code = 'upstream_too_large';
+        throw err;
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // Already closed.
+    }
+  }
+
+  return Buffer.concat(chunks, total);
+}
+
+function extractErrorMessage(text) {
+  if (!text) return '';
+  try {
+    const data = JSON.parse(text);
+    const candidate = data?.error?.message || data?.error || data?.message || data?.detail;
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim().slice(0, 1000);
+    if (candidate && typeof candidate === 'object') return JSON.stringify(candidate).slice(0, 1000);
+  } catch {
+    // Not JSON, fall through to raw text.
+  }
+  return text.trim().slice(0, 1000);
+}
+
+function clampNumber(value, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(max, Math.max(min, n));
+}
+
+function normalizeProsody(prosody) {
+  if (!prosody || typeof prosody !== 'object') return null;
+  const out = {};
+  const speed = clampNumber(prosody.speed, 0.5, 2);
+  const volume = clampNumber(prosody.volume, -20, 20);
+  if (speed !== null) out.speed = speed;
+  if (volume !== null) out.volume = volume;
+  return Object.keys(out).length ? out : null;
+}
+
+function handleUpstreamFetchError(res, err) {
+  const timedOut = err && (err.name === 'TimeoutError' || err.name === 'AbortError');
+  console.error('[proxy] upstream request failed:', (err && err.name) || 'Error');
+  sendJson(res, timedOut ? 504 : 502, {
+    error: timedOut ? 'upstream_timeout' : 'upstream_unreachable',
+    detail: timedOut
+      ? 'The upstream API took too long to respond.'
+      : 'The upstream API could not be reached.'
+  });
+}
+
+async function handleFish(req, res) {
+  const auth = getBearer(req);
+  if (!auth) {
+    sendJson(res, 401, {
+      error: 'missing_api_key',
+      detail: 'Authorization: Bearer <FISH_API_KEY> is required.'
+    });
+    return;
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    sendJson(res, err.statusCode || 400, { error: err.message });
+    return;
+  }
+  if (!body || typeof body !== 'object') {
+    sendJson(res, 400, { error: 'invalid_body' });
+    return;
+  }
+
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  const referenceId = typeof body.reference_id === 'string' ? body.reference_id.trim() : '';
+
+  if (!text) {
+    sendJson(res, 400, { error: 'missing_text', detail: 'text is required.' });
+    return;
+  }
+  if (text.length > MAX_TEXT) {
+    sendJson(res, 400, {
+      error: 'text_too_long',
+      detail: `text must be at most ${MAX_TEXT} characters.`
+    });
+    return;
+  }
+  if (!referenceId) {
+    sendJson(res, 400, {
+      error: 'missing_reference_id',
+      detail: 'reference_id is required for Fish Audio.'
+    });
+    return;
+  }
+  if (referenceId.length > 200) {
+    sendJson(res, 400, { error: 'invalid_reference_id' });
+    return;
+  }
+
+  const format = body.format === 'wav' ? 'wav' : 'mp3';
+  const payload = { text, reference_id: referenceId, format };
+  const prosody = normalizeProsody(body.prosody);
+  if (prosody) payload.prosody = prosody;
+
+  let upstream;
+  try {
+    upstream = await fetch(FISH_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: auth,
+        'Content-Type': 'application/json',
+        Accept: 'audio/*',
+        model: FISH_MODEL
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
+    });
+  } catch (err) {
+    handleUpstreamFetchError(res, err);
+    return;
+  }
+
+  if (!upstream.ok) {
+    const detail = extractErrorMessage(await readLimited(upstream, 4000));
+    sendJson(res, upstream.status, {
+      error: 'upstream_error',
+      status: upstream.status,
+      detail
+    });
+    return;
+  }
+
+  const contentType = (upstream.headers.get('content-type') || '').toLowerCase();
+  if (contentType.includes('json') || contentType.includes('text/html')) {
+    const body = await readLimited(upstream, 4000);
+    sendJson(res, 502, {
+      error: 'upstream_error',
+      detail: extractErrorMessage(body)
+    });
+    return;
+  }
+
+  let buffer;
+  try {
+    buffer = await readCappedBuffer(upstream, MAX_UPSTREAM_BYTES);
+  } catch (err) {
+    if (err && err.code === 'upstream_too_large') {
+      sendJson(res, 502, { error: 'upstream_too_large' });
+    } else {
+      handleUpstreamFetchError(res, err);
+    }
+    return;
+  }
+
+  if (!buffer.length) {
+    sendJson(res, 502, { error: 'empty_audio', detail: 'Fish Audio returned no audio.' });
+    return;
+  }
+
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    'Content-Type': contentType || (format === 'wav' ? 'audio/wav' : 'audio/mpeg'),
+    'Content-Length': buffer.length,
+    'Cache-Control': 'no-store',
+    'X-Audio-Format': format
+  });
+  res.end(buffer);
+}
+
+async function handleMimo(req, res) {
+  const auth = getBearer(req);
+  if (!auth) {
+    sendJson(res, 401, {
+      error: 'missing_api_key',
+      detail: 'Authorization: Bearer <MIMO_API_KEY> is required.'
+    });
+    return;
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    sendJson(res, err.statusCode || 400, { error: err.message });
+    return;
+  }
+  if (!body || typeof body !== 'object') {
+    sendJson(res, 400, { error: 'invalid_body' });
+    return;
+  }
+
+  const model =
+    typeof body.model === 'string' && body.model.trim()
+      ? body.model.trim()
+      : MIMO_DEFAULT_MODEL;
+  if (model.length > 100) {
+    sendJson(res, 400, { error: 'invalid_model', detail: 'model ID must be at most 100 characters.' });
+    return;
+  }
+
+  if (!Array.isArray(body.messages) || body.messages.length < 1 || body.messages.length > 4) {
+    sendJson(res, 400, { error: 'invalid_messages' });
+    return;
+  }
+
+  const messages = [];
+  let totalChars = 0;
+  for (const message of body.messages) {
+    if (!message || typeof message.role !== 'string' || typeof message.content !== 'string') {
+      sendJson(res, 400, { error: 'invalid_messages' });
+      return;
+    }
+    const role = ['user', 'assistant', 'system'].includes(message.role) ? message.role : 'user';
+    const content = message.content.trim();
+    if (!content) {
+      sendJson(res, 400, { error: 'invalid_messages' });
+      return;
+    }
+    totalChars += content.length;
+    messages.push({ role, content });
+  }
+  if (totalChars > MAX_TEXT + 600) {
+    sendJson(res, 400, { error: 'text_too_long', detail: `messages must total at most ${MAX_TEXT + 600} characters.` });
+    return;
+  }
+
+  const audio = body.audio && typeof body.audio === 'object' ? body.audio : {};
+  const voice = typeof audio.voice === 'string' && audio.voice.trim()
+    ? audio.voice.trim().slice(0, 60)
+    : '冰糖';
+  const format = audio.format === 'mp3' ? 'mp3' : 'wav';
+
+  let upstream;
+  try {
+    upstream = await fetch(MIMO_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: auth,
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        audio: { format, voice }
+      }),
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
+    });
+  } catch (err) {
+    handleUpstreamFetchError(res, err);
+    return;
+  }
+
+  if (!upstream.ok) {
+    const detail = extractErrorMessage(await readLimited(upstream, 4000));
+    sendJson(res, upstream.status, {
+      error: 'upstream_error',
+      status: upstream.status,
+      detail
+    });
+    return;
+  }
+
+  let raw;
+  try {
+    const buffer = await readCappedBuffer(upstream, MAX_UPSTREAM_BYTES);
+    raw = buffer.toString('utf8');
+  } catch (err) {
+    if (err && err.code === 'upstream_too_large') {
+      sendJson(res, 502, { error: 'upstream_too_large' });
+    } else {
+      handleUpstreamFetchError(res, err);
+    }
+    return;
+  }
+
+  try {
+    JSON.parse(raw);
+  } catch {
+    sendJson(res, 502, { error: 'upstream_error', detail: 'MiMo returned invalid JSON.' });
+    return;
+  }
+
+  sendText(res, 200, raw, 'application/json; charset=utf-8');
+}
+
+async function serveStatic(req, res, pathname) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    sendJson(res, 405, { error: 'method_not_allowed' });
+    return;
+  }
+
+  let relative = PAGE_ROUTES[pathname];
+  if (!relative) {
+    let decoded;
+    try {
+      decoded = decodeURIComponent(pathname);
+    } catch {
+      sendJson(res, 400, { error: 'bad_path' });
+      return;
+    }
+    relative = decoded.replace(/^\/+/, '');
+  }
+
+  if (!relative || relative.includes('\0')) {
+    sendJson(res, 404, { error: 'not_found' });
+    return;
+  }
+
+  const filePath = path.resolve(PUBLIC_DIR, relative);
+  if (filePath !== PUBLIC_DIR && !filePath.startsWith(PUBLIC_DIR + path.sep)) {
+    sendJson(res, 403, { error: 'forbidden' });
+    return;
+  }
+
+  let stat;
+  try {
+    stat = await fsp.stat(filePath);
+  } catch {
+    sendJson(res, 404, { error: 'not_found' });
+    return;
+  }
+  if (!stat.isFile()) {
+    sendJson(res, 404, { error: 'not_found' });
+    return;
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+  const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    'Content-Type': contentType,
+    'Content-Length': stat.size,
+    'Cache-Control': 'no-cache'
+  });
+
+  if (req.method === 'HEAD') {
+    res.end();
+    return;
+  }
+
+  const stream = fs.createReadStream(filePath);
+  stream.on('error', () => {
+    if (!res.headersSent) {
+      sendJson(res, 500, { error: 'internal_error' });
+    } else {
+      res.destroy();
+    }
+  });
+  stream.pipe(res);
+}
+
+const server = http.createServer(async (req, res) => {
+  let pathname;
+  try {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    pathname = url.pathname;
+  } catch {
+    sendJson(res, 400, { error: 'bad_url' });
+    return;
+  }
+
+  try {
+    if (pathname === '/api/health') {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        sendJson(res, 405, { error: 'method_not_allowed' });
+        return;
+      }
+      sendJson(res, 200, { ok: true, fishModel: FISH_MODEL, mimoDefaultModel: MIMO_DEFAULT_MODEL });
+      return;
+    }
+
+    if (pathname === '/api/fish') {
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { error: 'method_not_allowed' });
+        return;
+      }
+      await handleFish(req, res);
+      return;
+    }
+
+    if (pathname === '/api/mimo') {
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { error: 'method_not_allowed' });
+        return;
+      }
+      await handleMimo(req, res);
+      return;
+    }
+
+    if (pathname.startsWith('/api/')) {
+      sendJson(res, 404, { error: 'not_found' });
+      return;
+    }
+
+    await serveStatic(req, res, pathname);
+  } catch (err) {
+    console.error('[server] unhandled error:', (err && err.message) || 'unknown');
+    if (!res.headersSent) {
+      sendJson(res, 500, { error: 'internal_error' });
+    } else {
+      res.destroy();
+    }
+  }
+});
+
+server.listen(PORT, HOST, () => {
+  console.log(`TTS is free running at http://localhost:${PORT}`);
+  console.log(`Proxy targets: ${FISH_URL} (model: ${FISH_MODEL}), ${MIMO_URL}`);
+});

@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f4f6fb">
+  <meta name="description" content="Configure API keys and local data for TTS is free.">
+  <title data-i18n="meta.settingsTitle">设置 — TTS is free</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main" data-i18n="a11y.skip">跳到主要内容</a>
+
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="TTS is free">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M3.5 12h1.6M8 8.2v7.6M12 4.8v14.4M16 8.2v7.6M20.4 12h-1.4" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <span class="brand-text">
+        <strong>TTS is free</strong>
+        <span class="brand-sub" data-i18n="brand.tagline">免费 TTS 工作室</span>
+      </span>
+    </a>
+    <div class="header-actions">
+      <button class="icon-button lang-toggle" id="langToggle" type="button" data-i18n="nav.language" data-i18n-aria-label="a11y.switchLanguage" aria-label="切换语言">EN</button>
+      <a class="button ghost back-link" href="/">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M19 12H5m0 0 6-6m-6 6 6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span data-i18n="settings.back">返回应用</span>
+      </a>
+    </div>
+  </header>
+
+  <main class="app-shell settings-shell" id="main">
+    <section class="settings-hero">
+      <p class="eyebrow" data-i18n="nav.settings">设置</p>
+      <h1 data-i18n="settings.title">设置</h1>
+      <p data-i18n="settings.subtitle">配置 API Key、MiMo 模型与本地数据。</p>
+    </section>
+
+    <div class="notice info security-note">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 3.5 5 6.2v5.1c0 4.2 2.7 7.8 7 9.2 4.3-1.4 7-5 7-9.2V6.2L12 3.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+        <path d="m8.8 12.1 2.2 2.2 4.3-4.6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div class="security-copy">
+        <strong data-i18n="settings.securityTitle">密钥安全</strong>
+        <p data-i18n="settings.securityBody">API Key 仅保存在当前浏览器的 localStorage 中，并随合成请求发送到本项目的同源代理。密钥不会被写入代码、日志，也不会提交到 Git。</p>
+      </div>
+    </div>
+
+    <form id="settingsForm" class="settings-grid" autocomplete="off">
+      <section class="card settings-card">
+        <h2 data-i18n="settings.fish.title">Fish Audio（主引擎）</h2>
+        <div class="field">
+          <label for="fishKeyInput" data-i18n="settings.fish.keyLabel">API Key</label>
+          <div class="password-wrap">
+            <input id="fishKeyInput" type="password" autocomplete="off" spellcheck="false" data-i18n-placeholder="settings.fish.keyPlaceholder" placeholder="粘贴 Fish Audio API Key">
+            <button class="reveal-btn" id="fishKeyReveal" type="button" data-target="fishKeyInput">显示</button>
+          </div>
+          <p class="help" data-i18n="settings.fish.keyHelp">免费注册获取，无需信用卡。</p>
+          <a class="inline-link" href="https://fish.audio/app/api-keys/" target="_blank" rel="noopener noreferrer" data-i18n="settings.fish.getKey">获取 Fish API Key ↗</a>
+        </div>
+        <div class="field">
+          <label for="fishModelValue" data-i18n="settings.fish.modelLabel">模型 Header</label>
+          <input id="fishModelValue" class="readonly-input" type="text" value="s2.1-pro-free" readonly>
+          <p class="help" data-i18n="settings.fish.modelHelp">固定为 s2.1-pro-free（免费档）。如需切换，请修改 server.js 中的 FISH_MODEL 常量。</p>
+        </div>
+      </section>
+
+      <section class="card settings-card">
+        <h2 data-i18n="settings.mimo.title">MiMo TTS（备用引擎）</h2>
+        <div class="field">
+          <label for="mimoKeyInput" data-i18n="settings.mimo.keyLabel">API Key</label>
+          <div class="password-wrap">
+            <input id="mimoKeyInput" type="password" autocomplete="off" spellcheck="false" data-i18n-placeholder="settings.mimo.keyPlaceholder" placeholder="粘贴 MiMo API Key">
+            <button class="reveal-btn" id="mimoKeyReveal" type="button" data-target="mimoKeyInput">显示</button>
+          </div>
+          <p class="help" data-i18n="settings.mimo.keyHelp">需要小米开放平台账号；部分地区可能需要中国手机号。</p>
+          <a class="inline-link" href="https://platform.xiaomimimo.com" target="_blank" rel="noopener noreferrer" data-i18n="settings.mimo.getKey">打开小米开放平台 ↗</a>
+        </div>
+        <div class="field">
+          <label for="mimoModelInput" data-i18n="settings.mimo.modelLabel">模型 ID</label>
+          <div class="model-row">
+            <input id="mimoModelInput" type="text" autocomplete="off" spellcheck="false" data-i18n-placeholder="settings.mimo.modelPlaceholder" placeholder="mimo-v2.5-tts">
+            <button id="resetMimoModelBtn" class="button ghost" type="button" data-i18n="settings.mimo.useDefault">恢复默认</button>
+          </div>
+          <p class="help" data-i18n="settings.mimo.modelHelp">默认 mimo-v2.5-tts。V2.5 系列部分模型已于 2026-10-21 退役；如遇模型不存在，请从小米开放平台获取当前可用 ID（可能是 V2.6 系列）。</p>
+        </div>
+      </section>
+
+      <section class="card settings-card full">
+        <h2 data-i18n="settings.voices.title">Fish 预设音色</h2>
+        <p class="card-subtitle" data-i18n="settings.voices.desc">添加常用音色 ID，合成页会显示为一键选择的芯片。</p>
+
+        <div class="voice-form" id="voiceForm">
+          <div class="field">
+            <label for="voiceNameInput" data-i18n="settings.voices.nameLabel">名称</label>
+            <input id="voiceNameInput" type="text" autocomplete="off" spellcheck="false" data-i18n-placeholder="settings.voices.namePlaceholder" placeholder="例如：我的克隆音色">
+          </div>
+          <div class="field">
+            <label for="voiceIdInput" data-i18n="settings.voices.idLabel">Reference ID</label>
+            <input id="voiceIdInput" type="text" autocomplete="off" spellcheck="false" data-i18n-placeholder="settings.voices.idPlaceholder" placeholder="粘贴 Fish Audio 音色 ID">
+          </div>
+          <button id="addVoiceBtn" class="button secondary" type="button" data-i18n="settings.voices.add">添加</button>
+        </div>
+
+        <ul id="voiceList" class="voice-list"></ul>
+        <p id="voiceEmpty" class="voice-empty" data-i18n="settings.voices.empty">暂无预设音色。</p>
+      </section>
+
+      <section class="card settings-card full">
+        <h2 data-i18n="settings.data.title">本地数据</h2>
+        <p class="card-subtitle" data-i18n="settings.data.desc">历史记录、预设音色与偏好都保存在此浏览器。</p>
+        <span class="data-stat" id="historyCount">0</span>
+        <div class="data-actions">
+          <button id="clearHistoryBtn" class="button ghost" type="button" data-i18n="settings.data.clearHistory">清空历史</button>
+          <button id="clearKeysBtn" class="button ghost" type="button" data-i18n="settings.data.clearKeys">清除 API Key</button>
+          <button id="clearAllBtn" class="button danger" type="button" data-i18n="settings.data.clearAll">清除全部本地数据</button>
+        </div>
+      </section>
+
+      <div class="settings-actions">
+        <button type="submit" class="button primary" data-i18n="settings.save">保存设置</button>
+      </div>
+    </form>
+
+    <p class="settings-footer" data-i18n="settings.footer">密钥不会离开这台设备，除非用于向所选 TTS 服务发起请求。</p>
+  </main>
+
+  <footer class="site-footer">
+    <p data-i18n="footer.note">开源演示 · 请遵守各服务商的使用条款 · API Key 仅存本地</p>
+  </footer>
+
+  <div id="toastHost" class="toast-host" aria-live="polite"></div>
+
+  <script type="module" src="/js/settings.js"></script>
+</body>
+</html>

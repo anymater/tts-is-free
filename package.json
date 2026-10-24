@@ -1,0 +1,15 @@
+{
+  "name": "tts-is-free",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Free text-to-speech web app with Fish Audio (primary) and MiMo TTS (fallback), keys kept in localStorage.",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test:cors": "node scripts/cors-test.js",
+    "test:smoke": "node scripts/smoke-test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

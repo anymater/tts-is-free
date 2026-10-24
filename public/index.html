@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f4f6fb">
+  <meta name="description" content="Free text-to-speech with Fish Audio and MiMo TTS. API keys stay in your browser.">
+  <title data-i18n="meta.title">TTS is free — 免费文本转语音</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main" data-i18n="a11y.skip">跳到主要内容</a>
+
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="TTS is free">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M3.5 12h1.6M8 8.2v7.6M12 4.8v14.4M16 8.2v7.6M20.4 12h-1.4" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <span class="brand-text">
+        <strong>TTS is free</strong>
+        <span class="brand-sub" data-i18n="brand.tagline">免费 TTS 工作室</span>
+      </span>
+    </a>
+    <div class="header-actions">
+      <button class="icon-button lang-toggle" id="langToggle" type="button" data-i18n="nav.language" data-i18n-aria-label="a11y.switchLanguage" aria-label="切换语言">EN</button>
+      <a class="button ghost settings-link" href="/settings.html" data-i18n-aria-label="nav.settings" aria-label="设置">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z" stroke="currentColor" stroke-width="1.8"/>
+          <path d="M19.2 13.6a7.6 7.6 0 0 0 0-3.2l2-1.6-2-3.4-2.4 1a7.8 7.8 0 0 0-2.8-1.6L13.6 2h-4l-.4 2.8a7.8 7.8 0 0 0-2.8 1.6l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3.2l-2 1.6 2 3.4 2.4-1a7.8 7.8 0 0 0 2.8 1.6l.4 2.8h4l.4-2.8a7.8 7.8 0 0 0 2.8-1.6l2.4 1 2-3.4-2-1.6Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+        </svg>
+        <span data-i18n="nav.settings">设置</span>
+      </a>
+    </div>
+  </header>
+
+  <main class="app-shell" id="main">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow" data-i18n="hero.eyebrow">免费 · 无需安装 · 双引擎</p>
+        <h1 data-i18n="hero.title">让文字，开口说话。</h1>
+        <p class="hero-subtitle" data-i18n="hero.subtitle">使用 Fish Audio 与 MiMo TTS 免费合成语音。API Key 只保存在你的浏览器中，不会硬编码或提交到代码仓库。</p>
+        <div class="badges">
+          <span class="badge accent" data-i18n="hero.badgeFish">Fish Audio · 主引擎</span>
+          <span class="badge" data-i18n="hero.badgeMimo">MiMo TTS · 备用</span>
+          <span class="badge" data-i18n="hero.badgeLocal">密钥仅存本地</span>
+        </div>
+      </div>
+      <div class="hero-visual" aria-hidden="true">
+        <div class="studio-tile">
+          <span class="free-pill" data-i18n="hero.freePill">FREE</span>
+          <div class="wave large">
+            <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <div class="studio-caption">
+            <span>Fish × MiMo</span>
+            <strong>S2.1 PRO · TTS</strong>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div id="proxyNotice" class="notice error proxy-notice" hidden>
+      <span data-i18n="notice.proxyDown">无法连接后端代理。请先运行 npm start 启动应用。</span>
+    </div>
+
+    <section class="workspace">
+      <section class="card composer" id="composer">
+        <div class="card-head">
+          <div>
+            <h2 data-i18n="composer.title">合成</h2>
+            <p data-i18n="composer.subtitle">输入文本，选择引擎与音色。</p>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="label-row">
+            <label for="textInput" data-i18n="text.label">文本</label>
+            <span id="charCount" class="count">0 / 5000</span>
+          </div>
+          <textarea id="textInput" maxlength="5000" rows="7" spellcheck="false" data-i18n-placeholder="text.placeholder" placeholder="在这里输入中文或英文文本…"></textarea>
+        </div>
+
+        <fieldset class="field engine-fieldset">
+          <legend data-i18n="engine.label">引擎</legend>
+          <div class="engine-tabs" role="group" aria-label="Engine">
+            <button class="engine-tab" id="engineFish" type="button" data-engine="fish" aria-pressed="true">
+              <span class="engine-icon fish-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path d="M3.4 12c3.3-4.6 8.3-5.8 12.2-2.7L20 7.1v9.8l-4.4-2.2C11.7 17.8 6.7 16.6 3.4 12Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                  <circle cx="9" cy="11" r="1" fill="currentColor"/>
+                </svg>
+              </span>
+              <span class="engine-text">
+                <strong data-i18n="engine.fish.name">Fish Audio</strong>
+                <small data-i18n="engine.fish.desc">主引擎 · 自然音色 · 免费档</small>
+              </span>
+              <span class="engine-check" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none"><path d="m6 12.5 4 4 8-9" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </span>
+            </button>
+            <button class="engine-tab" id="engineMimo" type="button" data-engine="mimo" aria-pressed="false">
+              <span class="engine-icon mimo-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path d="M4 10.5v3M8 7.5v9M12 4.5v15M16 7.5v9M20 10.5v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+              </span>
+              <span class="engine-text">
+                <strong data-i18n="engine.mimo.name">MiMo TTS</strong>
+                <small data-i18n="engine.mimo.desc">小米 · 备用 · 限时免费</small>
+              </span>
+              <span class="engine-check" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none"><path d="m6 12.5 4 4 8-9" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </span>
+            </button>
+          </div>
+        </fieldset>
+
+        <div class="field voice-block" id="fishVoiceBlock">
+          <div class="label-row">
+            <label for="fishRefInput" data-i18n="voice.fish.refLabel">Reference ID（必填）</label>
+            <a class="inline-link" href="https://fish.audio" target="_blank" rel="noopener noreferrer" data-i18n="voice.fish.library">打开 Fish Audio ↗</a>
+          </div>
+          <input id="fishRefInput" type="text" autocomplete="off" spellcheck="false" data-i18n-placeholder="voice.fish.refPlaceholder" placeholder="粘贴 Fish Audio 音色 ID">
+          <p class="help" data-i18n="voice.fish.refHelp">从 Fish Audio 音色库复制音色 ID，或使用自己克隆的声音。</p>
+          <div class="preset-header">
+            <span data-i18n="voice.presets">预设音色</span>
+            <button id="savePresetBtn" class="link-button" type="button" data-i18n="voice.savePreset">存为预设</button>
+          </div>
+          <div class="chips" id="fishPresets"></div>
+        </div>
+
+        <div class="field voice-block" id="mimoVoiceBlock" hidden>
+          <div class="label-row">
+            <span class="field-label" data-i18n="voice.label">音色</span>
+            <span class="help inline-help" data-i18n="voice.mimo.hint">选择一个预设音色。</span>
+          </div>
+          <div class="chips" id="mimoVoices"></div>
+        </div>
+
+        <div class="controls-grid">
+          <div class="field compact">
+            <div class="range-row">
+              <label for="speedRange" data-i18n="controls.speed">语速</label>
+              <output id="speedValue" for="speedRange">1.0×</output>
+            </div>
+            <input id="speedRange" type="range" min="0.5" max="2" step="0.1" value="1">
+          </div>
+          <div class="field compact">
+            <div class="range-row">
+              <label for="volumeRange" data-i18n="controls.volume">音量</label>
+              <output id="volumeValue" for="volumeRange">100%</output>
+            </div>
+            <input id="volumeRange" type="range" min="10" max="200" step="10" value="100">
+          </div>
+          <div class="field compact format-field">
+            <label for="formatSelect" data-i18n="controls.format">输出格式</label>
+            <select id="formatSelect">
+              <option value="mp3">MP3</option>
+              <option value="wav">WAV</option>
+            </select>
+            <p class="help" data-i18n="controls.formatHelp">Fish 默认 mp3；MiMo 默认 wav（如 mp3 失败请切到 wav）。</p>
+          </div>
+        </div>
+
+        <div class="notice warning" id="keyNotice" hidden>
+          <span id="keyNoticeText"></span>
+          <a class="inline-link" href="/settings.html" data-i18n="notice.openSettings">前往设置</a>
+        </div>
+
+        <div class="synth-row">
+          <button id="synthBtn" class="button primary synth-button" type="button">
+            <span class="button-icon" id="synthIcon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M4 10.5v3M8 7.5v9M12 4.5v15M16 7.5v9M20 10.5v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span class="spinner" id="synthSpinner" hidden aria-hidden="true"></span>
+            <span id="synthBtnText" data-i18n="synth.button">合成语音</span>
+          </button>
+          <button id="cancelBtn" class="button ghost cancel-button" type="button" data-i18n="synth.cancel" hidden>取消</button>
+        </div>
+      </section>
+
+      <aside class="card result-card" id="resultCard">
+        <div class="card-head">
+          <h2 data-i18n="result.title">播放</h2>
+        </div>
+
+        <div id="resultEmpty" class="empty-state">
+          <div class="wave empty-wave" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <h3 data-i18n="result.emptyTitle">准备开始</h3>
+          <p data-i18n="result.emptyBody">合成后的音频会出现在这里，并自动保存到历史记录。</p>
+        </div>
+
+        <div id="resultError" class="notice error" role="alert" hidden>
+          <div class="error-copy">
+            <p id="resultErrorText"></p>
+            <details id="errorDetailWrap" hidden>
+              <summary data-i18n="errors.detail">技术详情：</summary>
+              <pre id="errorDetail"></pre>
+            </details>
+          </div>
+        </div>
+
+        <div id="resultBody" hidden>
+          <div class="player-shell" id="playerShell">
+            <div class="wave equalizer" aria-hidden="true">
+              <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+              <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <audio id="audioPlayer" controls preload="metadata"></audio>
+          </div>
+          <dl class="meta-grid">
+            <div>
+              <dt data-i18n="result.engine">引擎</dt>
+              <dd id="resultEngine">—</dd>
+            </div>
+            <div>
+              <dt data-i18n="result.voice">音色</dt>
+              <dd id="resultVoice">—</dd>
+            </div>
+            <div>
+              <dt data-i18n="result.format">格式</dt>
+              <dd id="resultFormat">—</dd>
+            </div>
+            <div>
+              <dt data-i18n="result.size">大小</dt>
+              <dd id="resultSize">—</dd>
+            </div>
+          </dl>
+          <button id="downloadBtn" class="button secondary download-button" type="button">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 17.5V19a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-1.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span data-i18n="result.download">下载音频</span>
+          </button>
+        </div>
+      </aside>
+    </section>
+
+    <section class="card history-section">
+      <div class="section-head">
+        <div>
+          <h2 data-i18n="history.title">历史记录</h2>
+          <p id="historySubtitle"></p>
+        </div>
+        <button id="clearHistoryBtn" class="button ghost small" type="button" data-i18n="history.clear">清空</button>
+      </div>
+      <div id="historyList" class="history-list"></div>
+      <p id="historyEmpty" class="empty-inline" data-i18n="history.empty">还没有历史记录。</p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p data-i18n="footer.note">开源演示 · 请遵守各服务商的使用条款 · API Key 仅存本地</p>
+    <p class="footer-proxy" data-i18n="footer.proxy">通过同源 Node 代理调用，避免浏览器 CORS 限制。</p>
+  </footer>
+
+  <div id="toastHost" class="toast-host" aria-live="polite"></div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+# Dependencies (none by default, kept for safety)
+node_modules/
+
+# Secrets / local config
+.env
+.env.*
+*.pem
+*.key
+
+# Logs and OS junk
+*.log
+.DS_Store
+Thumbs.db
+
+# Local scratch files
+.tmp-*
