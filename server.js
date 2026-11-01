@@ -388,7 +388,10 @@ async function handleVoices(req, res) {
     upstream = await fetch(`${FISH_MODELS_URL}?${params.toString()}`, {
       method: 'GET',
       headers: { Authorization: auth, Accept: 'application/json' },
-      signal: AbortSignal.timeout(30000)
+      // Short timeout: a voice list should answer in seconds. Kept well
+      // under the platform's wall-clock limit so a slow upstream still
+      // yields a clean 504 JSON instead of a dropped connection.
+      signal: AbortSignal.timeout(15000)
     });
   } catch (err) {
     const timedOut = err && (err.name === 'TimeoutError' || err.name === 'AbortError');

@@ -18,7 +18,10 @@
 'use strict';
 
 const FISH_MODELS_URL = 'https://api.fish.audio/model';
-const UPSTREAM_TIMEOUT_MS = 30000;
+// Short timeout: a voice list should answer in seconds. Kept well under
+// the platform's wall-clock limit so a slow upstream still yields a clean
+// 504 JSON instead of a dropped connection.
+const UPSTREAM_TIMEOUT_MS = 15000;
 
 function json(status, data) {
   return new Response(JSON.stringify(data), {
