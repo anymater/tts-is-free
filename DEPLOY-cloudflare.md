@@ -73,3 +73,12 @@ Health check verified: `/api/health` returns `{"ok":true,"fishModel":"s2.1-pro-f
   empty, node fetch timeout) — local upstream passthrough could not be
   verified here; the live Pages Function path (Cloudflare edge) is the
   verification route.
+
+## 2026-11-02 note: VM egress proxy vs Authorization headers
+- Testing an authenticated endpoint from this VM with curl + `Authorization`
+  header hangs indefinitely — including to unrelated hosts (httpbin) and
+  including requests that should 401 before any upstream call. Requests
+  without the header go through instantly. Root cause is the VM egress
+  proxy, NOT the Worker or Fish API. Workaround used: verify Worker→Fish
+  with a temporary server-side hardcoded key endpoint, then delete it.
+  Real users' browsers are unaffected (they don't go through this proxy).
