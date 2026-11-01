@@ -330,6 +330,94 @@ async function handleFish(req, res) {
   res.end(buffer);
 }
 
+const FISH_MODELS_URL = 'https://api.fish.audio/model';
+
+function clampQueryInt(value, fallback, min, max) {
+  const n = Number.parseInt(value, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function cleanQueryString(value, maxLen) {
+  return typeof value === 'string' ? value.trim().slice(0, maxLen) : '';
+}
+
+function normalizeVoiceItem(item) {
+  if (!item || typeof item !== 'object') return null;
+  const id = cleanQueryString(item._id || item.id, 200);
+  if (!id) return null;
+  const list = (value) => (Array.isArray(value)
+    ? value.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim().slice(0, 40)).slice(0, 20)
+    : []);
+  const count = Number(item.task_count);
+  return {
+    id,
+    title: cleanQueryString(item.title, 200),
+    description: cleanQueryString(item.description, 500),
+    languages: list(item.languages),
+    tags: list(item.tags),
+    task_count: Number.isFinite(count) && count >= 0 ? Math.floor(count) : null
+  };
+}
+
+// GET /api/voices — Node mirror of functions/api/voices.js. Keep both in
+// sync: same query params, same normalized response shape.
+async function handleVoices(req, res) {
+  const auth = getBearer(req);
+  if (!auth) {
+    sendJson(res, 401, {
+      error: 'missing_api_key',
+      detail: 'Authorization: Bearer <FISH_API_KEY> is required.'
+    });
+    return;
+  }
+
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const params = new URLSearchParams();
+  params.set('page_size', String(clampQueryInt(url.searchParams.get('page_size'), 20, 1, 50)));
+  params.set('page_number', String(clampQueryInt(url.searchParams.get('page_number'), 1, 1, 1000)));
+  params.set('sort_by', url.searchParams.get('sort_by') === 'created_at' ? 'created_at' : 'task_count');
+  const title = cleanQueryString(url.searchParams.get('q'), 200);
+  if (title) params.set('title', title);
+  const language = cleanQueryString(url.searchParams.get('language'), 20);
+  if (language) params.set('language', language);
+  if (url.searchParams.get('scope') === 'mine') params.set('self', 'true');
+
+  let upstream;
+  try {
+    upstream = await fetch(`${FISH_MODELS_URL}?${params.toString()}`, {
+      method: 'GET',
+      headers: { Authorization: auth, Accept: 'application/json' },
+      signal: AbortSignal.timeout(30000)
+    });
+  } catch (err) {
+    const timedOut = err && (err.name === 'TimeoutError' || err.name === 'AbortError');
+    sendJson(res, timedOut ? 504 : 502, {
+      error: timedOut ? 'upstream_timeout' : 'upstream_unreachable',
+      detail: timedOut ? 'The upstream API took too long to respond.' : 'The upstream API could not be reached.'
+    });
+    return;
+  }
+
+  if (!upstream.ok) {
+    const text = await upstream.text().catch(() => '');
+    sendJson(res, upstream.status, { error: 'upstream_error', status: upstream.status, detail: text.slice(0, 1000) });
+    return;
+  }
+
+  let data;
+  try {
+    data = await upstream.json();
+  } catch {
+    sendJson(res, 502, { error: 'upstream_error', detail: 'Fish Audio returned an unreadable voice list.' });
+    return;
+  }
+
+  const items = Array.isArray(data?.items) ? data.items.map(normalizeVoiceItem).filter(Boolean) : [];
+  const total = Number(data?.total);
+  sendJson(res, 200, { total: Number.isFinite(total) && total >= 0 ? Math.floor(total) : items.length, items });
+}
+
 async function handleMimo(req, res) {
   const auth = getBearer(req);
   if (!auth) {
@@ -548,6 +636,15 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       await handleMimo(req, res);
+      return;
+    }
+
+    if (pathname === '/api/voices') {
+      if (req.method !== 'GET') {
+        sendJson(res, 405, { error: 'method_not_allowed' });
+        return;
+      }
+      await handleVoices(req, res);
       return;
     }
 

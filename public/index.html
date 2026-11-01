@@ -122,11 +122,24 @@
 
         <div class="field voice-block" id="fishVoiceBlock">
           <div class="label-row">
-            <label for="fishRefInput" data-i18n="voice.fish.refLabel">Reference ID（必填）</label>
+            <span class="field-label" data-i18n="voice.picker.title">选择音色</span>
             <a class="inline-link" href="https://fish.audio" target="_blank" rel="noopener noreferrer" data-i18n="voice.fish.library">打开 Fish Audio ↗</a>
           </div>
+          <div class="voice-picker" id="fishVoicePicker">
+            <div class="picker-tabs">
+              <button type="button" class="picker-tab is-active" data-scope="public" data-i18n="voice.picker.popular">热门音色</button>
+              <button type="button" class="picker-tab" data-scope="mine" data-i18n="voice.picker.mine">我的音色</button>
+              <button type="button" class="link-button picker-refresh" id="fishVoicesRefresh" data-i18n="voice.picker.refresh">刷新</button>
+            </div>
+            <input id="fishVoiceSearch" type="search" autocomplete="off" spellcheck="false" data-i18n-placeholder="voice.picker.searchPlaceholder" placeholder="搜索音色名称…">
+            <p class="help" id="fishVoiceStatus" hidden></p>
+            <div class="voice-list" id="fishVoiceList"></div>
+          </div>
+          <div class="label-row picker-manual-label">
+            <label for="fishRefInput" data-i18n="voice.fish.refLabel">Reference ID（必填）</label>
+          </div>
           <input id="fishRefInput" type="text" autocomplete="off" spellcheck="false" data-i18n-placeholder="voice.fish.refPlaceholder" placeholder="粘贴 Fish Audio 音色 ID">
-          <p class="help" data-i18n="voice.fish.refHelp">从 Fish Audio 音色库复制音色 ID，或使用自己克隆的声音。</p>
+          <p class="help" data-i18n="voice.fish.refHelp">点选上方音色会自动填入，也可手动粘贴 ID。</p>
           <div class="preset-header">
             <span data-i18n="voice.presets">预设音色</span>
             <button id="savePresetBtn" class="link-button" type="button" data-i18n="voice.savePreset">存为预设</button>

@@ -1910,3 +1910,109 @@ input[type="range"]::-moz-range-thumb {
     animation: none;
   }
 }
+
+/* Fish voice picker: browse the Fish Audio library instead of pasting IDs. */
+.voice-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.picker-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.picker-tab {
+  appearance: none;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--text-soft);
+  font-size: 0.79rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.picker-tab.is-active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: transparent;
+  box-shadow: inset 0 0 0 1.5px rgba(99, 102, 241, 0.4);
+}
+
+.picker-refresh {
+  margin-left: auto;
+}
+
+#fishVoiceSearch {
+  width: 100%;
+}
+
+.voice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.voice-row {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  padding: 11px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease;
+}
+
+.voice-row:hover {
+  border-color: var(--border-strong);
+}
+
+.voice-row.is-active {
+  border-color: transparent;
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1.5px rgba(99, 102, 241, 0.4);
+}
+
+.voice-row-name {
+  font-size: 0.88rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.voice-row-meta {
+  font-size: 0.74rem;
+  color: var(--text-soft);
+}
+
+.voice-row-desc {
+  font-size: 0.78rem;
+  color: var(--text-soft);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.picker-manual-label {
+  margin-top: 2px;
+}

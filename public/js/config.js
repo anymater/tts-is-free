@@ -15,7 +15,8 @@ export const DEFAULT_FISH_VOICES = [
 export const API = {
   fish: '/api/fish',
   mimo: '/api/mimo',
-  health: '/api/health'
+  health: '/api/health',
+  voices: '/api/voices'
 };
 
 export const LINKS = {

@@ -206,6 +206,45 @@ export async function synthesizeMimo({
   return { blob, mime, format: actualFormat, engine: 'mimo' };
 }
 
+export async function fetchFishVoices({ key, scope = 'public', language = '', query = '', pageSize = 20, signal } = {}) {
+  const params = new URLSearchParams();
+  params.set('scope', scope === 'mine' ? 'mine' : 'public');
+  params.set('page_size', String(Math.min(50, Math.max(1, pageSize || 20))));
+  params.set('sort_by', 'task_count');
+  if (language) params.set('language', language);
+  if (query) params.set('q', query);
+
+  let response;
+  try {
+    response = await fetch(`${API.voices}?${params.toString()}`, {
+      method: 'GET',
+      signal,
+      headers: { Authorization: `Bearer ${key}` }
+    });
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw err;
+    throw new SynthesisError('network', { cause: err });
+  }
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new SynthesisError(mapStatus(response.status, 'fish'), {
+      status: response.status,
+      detail
+    });
+  }
+
+  let data;
+  try {
+    data = await response.json();
+  } catch (err) {
+    throw new SynthesisError('bad_audio', { cause: err });
+  }
+
+  const items = Array.isArray(data?.items) ? data.items.filter((item) => item && typeof item.id === 'string') : [];
+  return { total: typeof data?.total === 'number' ? data.total : items.length, items };
+}
+
 export async function checkProxy() {
   try {
     const response = await fetch(API.health, { cache: 'no-store' });

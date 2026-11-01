@@ -14,3 +14,6 @@ Thumbs.db
 
 # Local scratch files
 .tmp-*
+
+# Wrangler local state
+.wrangler/
