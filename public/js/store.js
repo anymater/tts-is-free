@@ -2,6 +2,7 @@ import {
   DEFAULT_FISH_VOICES,
   DEFAULT_PREFS,
   HISTORY_LIMIT,
+  MAX_CHARS,
   MIMO_DEFAULT_MODEL,
   MIMO_VOICES
 } from './config.js';
@@ -12,6 +13,7 @@ const PREFS_KEY = 'tts_free_prefs_v1';
 const VOICES_KEY = 'tts_free_voices_v1';
 const FAVORITES_KEY = 'tts_free_favorites_v1';
 const VOICE_TITLES_KEY = 'tts_free_voice_titles_v1';
+const DRAFT_KEY = 'tts_free_draft_v1';
 
 function readJSON(key, fallback) {
   try {
@@ -177,8 +179,43 @@ export function removeHistoryEntry(id) {
   return items;
 }
 
+// Flip a still-pending entry back to a plain text-only record (used when a
+// synthesis is aborted or fails: the text stays in history, reusable, but
+// no longer claims to be in progress). No-op when the entry was already
+// replaced by its completed version or never existed.
+export function clearPendingHistoryEntry(id) {
+  const items = getHistory();
+  const target = items.find((entry) => entry.id === id);
+  if (!target || !target.pending) return false;
+  writeJSON(
+    HISTORY_KEY,
+    items.map((entry) => (entry.id === id ? { ...entry, pending: false } : entry))
+  );
+  return true;
+}
+
 export function clearHistory() {
   writeJSON(HISTORY_KEY, []);
+}
+
+// The in-progress textarea draft: saved on every keystroke, restored on
+// load, so a refresh never eats typed text — even text never synthesized.
+export function getDraftText() {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    return typeof raw === 'string' ? raw.slice(0, MAX_CHARS) : '';
+  } catch {
+    return '';
+  }
+}
+
+export function saveDraftText(text) {
+  try {
+    localStorage.setItem(DRAFT_KEY, typeof text === 'string' ? text.slice(0, MAX_CHARS) : '');
+  } catch {
+    // Ignore storage failures (private mode, quota): the draft is a
+    // convenience, never a blocker.
+  }
 }
 
 export function clearAllLocalData() {
@@ -189,6 +226,7 @@ export function clearAllLocalData() {
     localStorage.removeItem(VOICES_KEY);
     localStorage.removeItem(FAVORITES_KEY);
     localStorage.removeItem(VOICE_TITLES_KEY);
+    localStorage.removeItem(DRAFT_KEY);
   } catch {
     // Ignore storage failures.
   }

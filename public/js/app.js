@@ -3,7 +3,9 @@ import { applyI18n, formatDate, getLang, t, toggleLang } from './i18n.js';
 import {
   addFishVoice,
   clearHistory,
+  clearPendingHistoryEntry,
   createId,
+  getDraftText,
   getFavorites,
   getFishVoices,
   getHistory,
@@ -13,6 +15,7 @@ import {
   hasKey,
   isFavorite,
   removeHistoryEntry,
+  saveDraftText,
   saveHistoryEntry,
   savePrefs,
   saveVoiceTitle,
@@ -688,7 +691,7 @@ function renderHistory() {
     if (!entry.audio) {
       const missing = document.createElement('span');
       missing.className = 'history-missing';
-      missing.textContent = t('history.audioMissing');
+      missing.textContent = t(entry.pending ? 'history.audioPending' : 'history.audioMissing');
       top.append(missing);
     }
 
@@ -791,7 +794,7 @@ async function persistHistory(audio, meta) {
   }
 
   const entry = {
-    id: createId(),
+    id: meta.historyId || createId(),
     ts: Date.now(),
     engine: meta.engine,
     voice: meta.voice || '',
@@ -896,6 +899,7 @@ function applyEntryToForm(entry) {
 
   prefs = savePrefs(patch);
   textInput.value = entry.text || '';
+  saveDraftText(entry.text || '');
   fishRefInput.value = prefs.fishRef;
   speedRange.value = String(prefs.speed);
   volumeRange.value = String(prefs.volume);
@@ -952,6 +956,33 @@ async function handleSynthesize() {
   const format = formatSelect.value === 'wav' ? 'wav' : 'mp3';
   const voice = engine === 'fish' ? referenceId : prefs.mimoVoice;
 
+  // Record the text in history BEFORE the network call, so the text is
+  // kept even if synthesis fails or is cancelled. The pending entry is
+  // replaced in place by persistHistory on success (same id), or flipped
+  // to a plain text-only record in finally otherwise. History must never
+  // block synthesis, so failures here are swallowed.
+  const historyId = createId();
+  try {
+    saveHistoryEntry({
+      id: historyId,
+      ts: Date.now(),
+      engine,
+      voice,
+      text,
+      speed,
+      volume: volumePercent,
+      format,
+      mime: '',
+      size: 0,
+      audio: null,
+      audioDropped: false,
+      pending: true
+    });
+    renderHistory();
+  } catch {
+    // Ignore: the draft autosave still preserves the text.
+  }
+
   const controller = new AbortController();
   activeController = controller;
   setLoading(true);
@@ -992,7 +1023,8 @@ async function handleSynthesize() {
       text,
       speed,
       volume: volumePercent,
-      format: audio.format
+      format: audio.format,
+      historyId
     });
   } catch (err) {
     if (err && err.name === 'AbortError') {
@@ -1003,6 +1035,9 @@ async function handleSynthesize() {
   } finally {
     if (activeController === controller) activeController = null;
     setLoading(false);
+    // Success already replaced the pending entry (same id); this only
+    // flips it to a text-only record on abort/failure.
+    if (clearPendingHistoryEntry(historyId)) renderHistory();
   }
 }
 
@@ -1049,7 +1084,10 @@ langToggle.addEventListener('click', () => {
   refreshLanguage();
 });
 
-textInput.addEventListener('input', updateCharCount);
+textInput.addEventListener('input', () => {
+  updateCharCount();
+  saveDraftText(textInput.value);
+});
 
 fishRefInput.addEventListener('input', () => {
   prefs = savePrefs({ fishRef: fishRefInput.value });
@@ -1230,6 +1268,12 @@ window.addEventListener('pageshow', (event) => {
 
 applyI18n(document);
 textInput.maxLength = MAX_CHARS;
+// Restore the in-progress draft (saved on every keystroke) so a refresh
+// never eats typed text. Only fills when the field starts empty.
+if (!textInput.value) {
+  const draft = getDraftText();
+  if (draft) textInput.value = draft;
+}
 syncFormFromPrefs();
 selectEngine(prefs.engine, { persist: false });
 updateCharCount();
