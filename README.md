@@ -261,6 +261,36 @@ Key 只从环境变量读（CLI 也可用 `--fish-key` / `--mimo-key` 显式传�
 
 ---
 
+## 官方默认额度 + 自定义 Key（双模式）与 Cloudflare 配置
+
+本站有两种合成模式：
+
+- **自定义 Key 模式**：浏览器在设置页填了 Key → 请求携带 `Authorization: Bearer <你的Key>`，使用你自己的账号；不占官方额度、不参与计数，行为与单 Key 版本完全一致。
+- **官方额度模式**：浏览器不带 Authorization → Cloudflare Function 用保存在项目 secrets 里的官方 Key 代发请求。官方 Key 绝不下发给浏览器，代理只透传音频/错误。
+  额度：**每个 IP 每个自然月 500 次成功合成**（Fish + MiMo 共用一池；只有上游成功返回音频才计数；调用前先查，超额直接 429 `official_quota_exceeded`，不请求上游）。
+  计数存 KV（binding 名 `TTS_QUOTA_KV`，key 形如 `quota:<ip>:<YYYY-MM>`，下月自动过期重置）。
+  容错 fail-closed：官方 Key 未配置 → 503 `official_key_missing`；KV 未绑定或读写失败 → 503 `official_quota_unavailable`。两种情况前端都会提示去设置页填自己的 Key。
+  `/api/voices` 无 Key 时也回退官方 Key（公开列表，不检查也不计额度），打开就能用音色选择器。
+
+### 部署者需要在 Cloudflare 后台做的事
+
+1. **创建两个 secrets**（Pages 项目 → Settings → Environment variables → Add，类型选 Secret）：
+   - `FISH_OFFICIAL_KEY`：你的 Fish Audio API Key
+   - `MIMO_OFFICIAL_KEY`：你的 MiMo API Key
+2. **创建并绑定 KV namespace**：Storage & Databases → KV namespaces → Create（名字随意，如 `tts-quota`）；回到 Pages 项目 Settings → Environment variables → KV namespace bindings，Variable name 必须填 `TTS_QUOTA_KV`，绑定到刚建的 namespace。
+3. **重新部署一次**让绑定生效（见下方验证；wrangler 命令：`CLOUDFLARE_API_TOKEN=<token> npx wrangler pages deploy public --project-name tts-is-free`）。
+4. **验证**：
+   - 无 Key 调用合成应成功，且响应头 `X-Official-Quota-Remaining` 比上一次少 1（浏览器 DevTools Network 里看 `/api/fish` 响应头；或临时脚本连调两次对比）。
+   - 无 `Authorization` 访问 `/api/voices` 应返回 200 音色列表。
+   - 把同一 IP 的额度刷满 500 次后，第 501 次应返回 429 `{"error":"official_quota_exceeded"}`；此时带自己的 Key 仍应正常出音频。
+   - 额度桶按自然月过期，下月 1 日自动重置。
+
+本地 `server.js` 镜像同一逻辑：官方 Key 从 `process.env.FISH_OFFICIAL_KEY` / `MIMO_OFFICIAL_KEY` 读取，额度计数用进程内 Map（仅开发用，重启清零、多实例不共享；线上以 KV 为准）。`FISH_UPSTREAM_URL` / `MIMO_UPSTREAM_URL` / `FISH_MODELS_UPSTREAM_URL` 环境变量可把上游指向本地 mock，便于无真实 Key 验证双模式，默认仍指向官方 API 地址。
+
+注意：改完 Cloudflare 后台配置（secrets / KV 绑定）后若官方模式未生效（503），**重新部署一次**（`wrangler pages deploy`）即可——Pages 的环境绑定在部署时快照。
+
+---
+
 ## 免责声明
 
 本项目按“现状”提供，不保证两个第三方 TTS 服务的可用性、免费政策或模型名称长期不变。使用前请阅读并遵守各自服务条款。API Key 的保管责任在用户本人。

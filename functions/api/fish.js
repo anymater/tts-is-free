@@ -1,10 +1,13 @@
 // Cloudflare Pages Function for POST /api/fish.
 // Port of handleFish() in server.js (local Node proxy) to the Workers runtime.
-// Same contract: the browser sends Bearer <FISH_API_KEY> (kept in localStorage
-// only) plus { text, reference_id, format, prosody? }; the key is never stored
-// server-side and never committed to the repo. No frontend change needed:
-// public/js/config.js already calls /api/fish.
+// Dual mode: the browser may send Bearer <FISH_API_KEY> (kept in localStorage
+// only) — then it is used as-is and nothing is counted. Without Authorization
+// the request falls back to the official key (env FISH_OFFICIAL_KEY) under the
+// per-IP monthly quota in _official.js. The official key never leaves the
+// proxy; only audio/errors are forwarded.
 'use strict';
+
+import { QUOTA_EXPOSE_HEADERS, finalizeQuotaResponse, resolveApiKey } from './_official.js';
 
 const FISH_URL = 'https://api.fish.audio/v1/tts';
 const FISH_MODEL = 's2.1-pro-free';
@@ -52,11 +55,6 @@ export async function onRequest(context) {
   const { request } = context;
   if (request.method !== 'POST') return json(405, { error: 'method_not_allowed' });
 
-  const auth = request.headers.get('Authorization');
-  if (!auth || !/^Bearer\s+\S+/.test(auth)) {
-    return json(401, { error: 'missing_api_key', detail: 'Authorization: Bearer <FISH_API_KEY> is required.' });
-  }
-
   let body;
   try {
     body = await request.json();
@@ -77,11 +75,16 @@ export async function onRequest(context) {
   const prosody = normalizeProsody(body.prosody);
   if (prosody) payload.prosody = prosody;
 
+  // 解析本次请求应使用的 Authorization：自定义 Key 原样透传；无 Key 走
+  // 官方 Key + 额度。缺官方 Key / 缺 KV → 503，超额 → 429，均不请求上游。
+  const resolved = await resolveApiKey({ request, env: context.env, provider: 'fish' });
+  if (resolved.early) return resolved.early;
+
   let upstream;
   try {
     upstream = await fetch(FISH_URL, {
       method: 'POST',
-      headers: { Authorization: auth, 'Content-Type': 'application/json', Accept: 'audio/*', model: FISH_MODEL },
+      headers: { Authorization: resolved.auth, 'Content-Type': 'application/json', Accept: 'audio/*', model: FISH_MODEL },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
     });
@@ -107,12 +110,17 @@ export async function onRequest(context) {
   if (buffer.byteLength > MAX_UPSTREAM_BYTES) return json(502, { error: 'upstream_too_large' });
   if (!buffer.byteLength) return json(502, { error: 'empty_audio', detail: 'Fish Audio returned no audio.' });
 
-  return new Response(buffer, {
-    status: 200,
-    headers: {
-      'Content-Type': contentType || (format === 'wav' ? 'audio/wav' : 'audio/mpeg'),
-      'Cache-Control': 'no-store',
-      'X-Audio-Format': format
-    }
-  });
+  // 只有成功拿到音频才计入官方额度。
+  return finalizeQuotaResponse(
+    new Response(buffer, {
+      status: 200,
+      headers: {
+        'Content-Type': contentType || (format === 'wav' ? 'audio/wav' : 'audio/mpeg'),
+        'Cache-Control': 'no-store',
+        'X-Audio-Format': format,
+        ...QUOTA_EXPOSE_HEADERS
+      }
+    }),
+    resolved.quota
+  );
 }

@@ -9,11 +9,85 @@ const PORT = Number.parseInt(process.env.PORT || '3000', 10) || 3000;
 const HOST = process.env.HOST || '127.0.0.1';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-const FISH_URL = 'https://api.fish.audio/v1/tts';
-const MIMO_URL = 'https://api.xiaomimimo.com/v1/chat/completions';
+const FISH_URL = process.env.FISH_UPSTREAM_URL || 'https://api.fish.audio/v1/tts';
+const MIMO_URL = process.env.MIMO_UPSTREAM_URL || 'https://api.xiaomimimo.com/v1/chat/completions';
 // Free-tier model. Change this constant if Fish Audio retires s2.1-pro-free.
 const FISH_MODEL = 's2.1-pro-free';
 const MIMO_DEFAULT_MODEL = 'mimo-v2.5-tts';
+
+// ---------- 官方模式（无 Key fallback）+ 免费额度：本地开发镜像 ----------
+// 与 functions/api/_official.js 保持同一套规则（双模式契约、IP 取法、
+// 每 IP 每自然月额度）。区别只在依赖注入：
+//   - 官方 Key：线上是 Pages secrets（context.env.FISH_OFFICIAL_KEY /
+//     MIMO_OFFICIAL_KEY），本地从 process.env 读同名变量。绝不下发给浏览器。
+//   - 额度计数：线上是 KV（TTS_QUOTA_KV）；本地用进程内 Map —— 仅开发用，
+//     重启清零、多实例不共享。FISH_UPSTREAM_URL / MIMO_UPSTREAM_URL 环境变量
+//     用于把上游指向本地 mock 做验证，默认仍是官方 API 地址。
+const OFFICIAL_QUOTA_LIMIT = 500;
+// key: `quota:<ip>:<YYYY-MM>` → 已成功合成次数（仅进程内，重启清零）
+const officialQuotaMap = new Map();
+
+function clientIp(req) {
+  const cf = req.headers['cf-connecting-ip'];
+  if (typeof cf === 'string' && cf.trim()) return cf.trim().slice(0, 64);
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string') {
+    const first = forwarded.split(',')[0];
+    if (first && first.trim()) return first.trim().slice(0, 64);
+  }
+  return 'unknown';
+}
+
+function monthBucket(now = Date.now()) {
+  const d = new Date(now);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+}
+
+function officialBearer(env, provider) {
+  const key = provider === 'mimo' ? env.MIMO_OFFICIAL_KEY : env.FISH_OFFICIAL_KEY;
+  return typeof key === 'string' && key.trim() ? `Bearer ${key.trim()}` : null;
+}
+
+// 返回 { early: {status, body, headers} } 表示必须直接响应且不得请求上游；
+// 否则返回 { auth, quota }（quota 非空表示官方模式，成功后需记一次数）。
+// enforceQuota=false 用于 /api/voices：列表是公开数据，不检查也不计额度。
+function resolveApiKeyLocal(req, provider, { enforceQuota = true } = {}) {
+  const custom = getBearer(req);
+  if (custom) return { auth: custom, quota: null };
+
+  const bearer = officialBearer(process.env, provider);
+  if (!bearer) return { early: { status: 503, body: { error: 'official_key_missing' } } };
+  if (!enforceQuota) return { auth: bearer, quota: null };
+
+  const key = `quota:${clientIp(req)}:${monthBucket()}`;
+  const used = officialQuotaMap.get(key) || 0;
+  if (used >= OFFICIAL_QUOTA_LIMIT) {
+    return {
+      early: {
+        status: 429,
+        body: { error: 'official_quota_exceeded' },
+        headers: quotaHeaders(Math.max(0, OFFICIAL_QUOTA_LIMIT - used))
+      }
+    };
+  }
+  return { auth: bearer, quota: { key, used } };
+}
+
+function quotaHeaders(remaining) {
+  return {
+    'X-Official-Quota-Limit': String(OFFICIAL_QUOTA_LIMIT),
+    'X-Official-Quota-Remaining': String(remaining)
+  };
+}
+
+// 官方模式成功交付音频后计数，返回最新额度头。
+function recordOfficialSuccessLocal(quota) {
+  if (!quota) return null;
+  const used = (officialQuotaMap.get(quota.key) || 0) + 1;
+  officialQuotaMap.set(quota.key, used);
+  return quotaHeaders(Math.max(0, OFFICIAL_QUOTA_LIMIT - used));
+}
 
 const MAX_TEXT = 5000;
 const MAX_BODY = 2 * 1024 * 1024;
@@ -28,7 +102,9 @@ const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-  'X-Frame-Options': 'DENY'
+  'X-Frame-Options': 'DENY',
+  // 让浏览器 fetch 能读到自定义的 X-Official-Quota-* 响应头。
+  'Access-Control-Expose-Headers': 'X-Official-Quota-Limit, X-Official-Quota-Remaining'
 };
 
 const MIME_TYPES = {
@@ -53,25 +129,27 @@ const PAGE_ROUTES = {
   '/settings.html': 'settings.html'
 };
 
-function sendJson(res, status, data) {
+function sendJson(res, status, data, extraHeaders) {
   if (res.writableEnded) return;
   const body = JSON.stringify(data);
   res.writeHead(status, {
     ...SECURITY_HEADERS,
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
-    'Cache-Control': 'no-store'
+    'Cache-Control': 'no-store',
+    ...(extraHeaders || {})
   });
   res.end(body);
 }
 
-function sendText(res, status, body, contentType) {
+function sendText(res, status, body, contentType, extraHeaders) {
   if (res.writableEnded) return;
   res.writeHead(status, {
     ...SECURITY_HEADERS,
     'Content-Type': contentType || 'text/plain; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
-    'Cache-Control': 'no-store'
+    'Cache-Control': 'no-store',
+    ...(extraHeaders || {})
   });
   res.end(body);
 }
@@ -213,15 +291,6 @@ function handleUpstreamFetchError(res, err) {
 }
 
 async function handleFish(req, res) {
-  const auth = getBearer(req);
-  if (!auth) {
-    sendJson(res, 401, {
-      error: 'missing_api_key',
-      detail: 'Authorization: Bearer <FISH_API_KEY> is required.'
-    });
-    return;
-  }
-
   let body;
   try {
     body = await readJsonBody(req);
@@ -264,6 +333,15 @@ async function handleFish(req, res) {
   const payload = { text, reference_id: referenceId, format };
   const prosody = normalizeProsody(body.prosody);
   if (prosody) payload.prosody = prosody;
+
+  // 双模式：带 Authorization 用用户自己的 Key（不计数）；不带则走官方 Key +
+  // 每 IP 每自然月额度。缺 Key / 超额直接响应，不请求上游。
+  const resolved = resolveApiKeyLocal(req, 'fish');
+  if (resolved.early) {
+    sendJson(res, resolved.early.status, resolved.early.body, resolved.early.headers);
+    return;
+  }
+  const auth = resolved.auth;
 
   let upstream;
   try {
@@ -320,17 +398,20 @@ async function handleFish(req, res) {
     return;
   }
 
+  // 只有成功拿到音频才计入官方额度，并把最新余量写进响应头。
+  const quotaHeadersOut = recordOfficialSuccessLocal(resolved.quota);
   res.writeHead(200, {
     ...SECURITY_HEADERS,
     'Content-Type': contentType || (format === 'wav' ? 'audio/wav' : 'audio/mpeg'),
     'Content-Length': buffer.length,
     'Cache-Control': 'no-store',
-    'X-Audio-Format': format
+    'X-Audio-Format': format,
+    ...(quotaHeadersOut || {})
   });
   res.end(buffer);
 }
 
-const FISH_MODELS_URL = 'https://api.fish.audio/model';
+const FISH_MODELS_URL = process.env.FISH_MODELS_UPSTREAM_URL || 'https://api.fish.audio/model';
 
 function clampQueryInt(value, fallback, min, max) {
   const n = Number.parseInt(value, 10);
@@ -403,15 +484,6 @@ function normalizeVoiceItem(item) {
 // GET /api/voices — Node mirror of functions/api/voices.js. Keep both in
 // sync: same query params, same normalized response shape.
 async function handleVoices(req, res) {
-  const auth = getBearer(req);
-  if (!auth) {
-    sendJson(res, 401, {
-      error: 'missing_api_key',
-      detail: 'Authorization: Bearer <FISH_API_KEY> is required.'
-    });
-    return;
-  }
-
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const params = new URLSearchParams();
   params.set('page_size', String(clampQueryInt(url.searchParams.get('page_size'), 20, 1, 50)));
@@ -426,6 +498,14 @@ async function handleVoices(req, res) {
   if (tag) params.set('tag', tag);
   if (url.searchParams.get('licensed') === 'true') params.set('licensed', 'true');
   if (url.searchParams.get('scope') === 'mine') params.set('self', 'true');
+
+  // 无 Key 时回退官方 Key（列表是公开数据，不检查也不计额度）。
+  const resolved = resolveApiKeyLocal(req, 'fish', { enforceQuota: false });
+  if (resolved.early) {
+    sendJson(res, resolved.early.status, resolved.early.body, resolved.early.headers);
+    return;
+  }
+  const auth = resolved.auth;
 
   let upstream;
   try {
@@ -466,15 +546,6 @@ async function handleVoices(req, res) {
 }
 
 async function handleMimo(req, res) {
-  const auth = getBearer(req);
-  if (!auth) {
-    sendJson(res, 401, {
-      error: 'missing_api_key',
-      detail: 'Authorization: Bearer <MIMO_API_KEY> is required.'
-    });
-    return;
-  }
-
   let body;
   try {
     body = await readJsonBody(req);
@@ -528,6 +599,14 @@ async function handleMimo(req, res) {
     : '冰糖';
   const format = audio.format === 'mp3' ? 'mp3' : 'wav';
 
+  // 双模式：与 /api/fish 共用同一个官方额度池。
+  const resolved = resolveApiKeyLocal(req, 'mimo');
+  if (resolved.early) {
+    sendJson(res, resolved.early.status, resolved.early.body, resolved.early.headers);
+    return;
+  }
+  const auth = resolved.auth;
+
   let upstream;
   try {
     upstream = await fetch(MIMO_URL, {
@@ -572,14 +651,22 @@ async function handleMimo(req, res) {
     return;
   }
 
+  let parsed;
   try {
-    JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch {
     sendJson(res, 502, { error: 'upstream_error', detail: 'MiMo returned invalid JSON.' });
     return;
   }
 
-  sendText(res, 200, raw, 'application/json; charset=utf-8');
+  // 只有上游确实带回音频才计入官方额度（字段路径与前端 api.js 一致）。
+  const audioField = parsed?.choices?.[0]?.message?.audio;
+  const hasAudio = Boolean(
+    (typeof audioField === 'string' && audioField) ||
+    (audioField && typeof audioField.data === 'string' && audioField.data)
+  );
+  const quotaHeadersOut = hasAudio ? recordOfficialSuccessLocal(resolved.quota) : null;
+  sendText(res, 200, raw, 'application/json; charset=utf-8', quotaHeadersOut);
 }
 
 async function serveStatic(req, res, pathname) {

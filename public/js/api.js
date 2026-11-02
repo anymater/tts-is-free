@@ -11,6 +11,37 @@ export class SynthesisError extends Error {
   }
 }
 
+/* ---------- 官方额度状态（响应头 X-Official-Quota-* 的唯一出口） ----------
+   代理只在“官方模式”（请求不带 Authorization）时回传这两个头；自定义模式
+   没有头 → lastOfficialQuota 保持 null，app.js 据此区分两种模式。 */
+let lastOfficialQuota = null;
+let quotaListener = null;
+
+export function getOfficialQuota() {
+  return lastOfficialQuota;
+}
+
+// app.js 注册回调：任何一次 API 响应带回额度头都会触发刷新指示器。
+export function onOfficialQuotaUpdate(listener) {
+  quotaListener = typeof listener === 'function' ? listener : null;
+}
+
+function applyQuotaHeaders(headers) {
+  if (!headers) return;
+  const limit = Number(headers.get('X-Official-Quota-Limit'));
+  const remaining = Number(headers.get('X-Official-Quota-Remaining'));
+  if (!Number.isFinite(limit) || !Number.isFinite(remaining)) return;
+  lastOfficialQuota = { limit, remaining, ts: Date.now() };
+  if (quotaListener) quotaListener(lastOfficialQuota);
+}
+
+// 服务端专用的错误码（官方模式不可用/超额），优先于 HTTP 状态码映射。
+const SERVER_ERROR_CODES = new Set([
+  'official_quota_exceeded',
+  'official_key_missing',
+  'official_quota_unavailable'
+]);
+
 function mapStatus(status, engine) {
   if (status === 401 || status === 403) return 'invalid_key';
   if (status === 402 || status === 429) return 'quota';
@@ -20,30 +51,35 @@ function mapStatus(status, engine) {
   return 'bad_request';
 }
 
-async function readErrorDetail(response) {
+async function readErrorPayload(response) {
   const text = await response.text().catch(() => '');
-  if (!text) return '';
-  try {
-    const data = JSON.parse(text);
-    const candidate = data?.detail || data?.error?.message || data?.error || data?.message;
-    if (typeof candidate === 'string') return candidate.slice(0, 600);
-    if (candidate && typeof candidate === 'object') return JSON.stringify(candidate).slice(0, 600);
-  } catch {
-    // Fall through to plain text.
+  let serverCode = '';
+  let detail = '';
+  if (text) {
+    try {
+      const data = JSON.parse(text);
+      if (typeof data?.error === 'string' && SERVER_ERROR_CODES.has(data.error)) serverCode = data.error;
+      const candidate = data?.detail || data?.error?.message || data?.error || data?.message;
+      if (typeof candidate === 'string') detail = candidate.slice(0, 600);
+      else if (candidate && typeof candidate === 'object') detail = JSON.stringify(candidate).slice(0, 600);
+    } catch {
+      detail = text.slice(0, 600);
+    }
   }
-  return text.slice(0, 600);
+  return { serverCode, detail };
 }
 
 async function requestJson(path, key, payload, signal, engine) {
+  const headers = { 'Content-Type': 'application/json' };
+  // 有 Key → 自定义模式；没有 Key 就不带 Authorization，由代理走官方模式。
+  if (key) headers.Authorization = `Bearer ${key}`;
+
   let response;
   try {
     response = await fetch(path, {
       method: 'POST',
       signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${key}`
-      },
+      headers,
       body: JSON.stringify(payload)
     });
   } catch (err) {
@@ -51,9 +87,11 @@ async function requestJson(path, key, payload, signal, engine) {
     throw new SynthesisError('network', { cause: err });
   }
 
+  applyQuotaHeaders(response.headers);
+
   if (!response.ok) {
-    const detail = await readErrorDetail(response);
-    throw new SynthesisError(mapStatus(response.status, engine), {
+    const { serverCode, detail } = await readErrorPayload(response);
+    throw new SynthesisError(serverCode || mapStatus(response.status, engine), {
       status: response.status,
       detail
     });
@@ -219,19 +257,17 @@ export async function fetchFishVoices({ key, scope = 'public', language = '', qu
 
   let response;
   try {
-    response = await fetch(`${API.voices}?${params.toString()}`, {
-      method: 'GET',
-      signal,
-      headers: { Authorization: `Bearer ${key}` }
-    });
+    const headers = {};
+    if (key) headers.Authorization = `Bearer ${key}`;
+    response = await fetch(`${API.voices}?${params.toString()}`, { method: 'GET', signal, headers });
   } catch (err) {
     if (err && err.name === 'AbortError') throw err;
     throw new SynthesisError('network', { cause: err });
   }
 
   if (!response.ok) {
-    const detail = await readErrorDetail(response);
-    throw new SynthesisError(mapStatus(response.status, 'fish'), {
+    const { serverCode, detail } = await readErrorPayload(response);
+    throw new SynthesisError(serverCode || mapStatus(response.status, 'fish'), {
       status: response.status,
       detail
     });
@@ -245,7 +281,8 @@ export async function fetchFishVoices({ key, scope = 'public', language = '', qu
   }
 
   const items = Array.isArray(data?.items) ? data.items.filter((item) => item && typeof item.id === 'string') : [];
-  return { total: typeof data?.total === 'number' ? data.total : items.length, items };
+  // official=true 表示这次列表是代理用官方 Key 取的（用户没填自己的 Key）。
+  return { total: typeof data?.total === 'number' ? data.total : items.length, items, official: !key };
 }
 
 export async function checkProxy() {

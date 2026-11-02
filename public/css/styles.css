@@ -1066,6 +1066,43 @@ input[type="range"]::-moz-range-thumb {
   margin-bottom: 16px;
 }
 
+/* ---------- 模式指示：官方免费额度 / 自定义 Key ---------- */
+.mode-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.mode-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border: 1px solid var(--line, rgba(128, 128, 128, 0.25));
+  border-radius: 999px;
+  font-size: 0.8rem;
+  color: var(--text-soft);
+  background: transparent;
+}
+
+.mode-pill.official {
+  color: var(--accent);
+  border-color: rgba(99, 102, 241, 0.35);
+  background: var(--accent-soft);
+}
+
+.mode-pill.custom {
+  color: #0d7a3f;
+  border-color: rgba(13, 122, 63, 0.3);
+  background: rgba(13, 122, 63, 0.08);
+}
+
+.mode-quota {
+  font-size: 0.8rem;
+  color: var(--text-soft);
+}
+
 .error-copy {
   min-width: 0;
 }

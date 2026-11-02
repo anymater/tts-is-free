@@ -29,6 +29,8 @@ import {
   buildMimoInstruction,
   checkProxy,
   fetchFishVoices,
+  getOfficialQuota,
+  onOfficialQuotaUpdate,
   synthesizeFish,
   synthesizeMimo,
   volumePercentToDb
@@ -62,6 +64,9 @@ const volumeValue = $('volumeValue');
 const formatSelect = $('formatSelect');
 const keyNotice = $('keyNotice');
 const keyNoticeText = $('keyNoticeText');
+const modeRow = $('modeRow');
+const modePill = $('modePill');
+const modeQuota = $('modeQuota');
 const proxyNotice = $('proxyNotice');
 const synthBtn = $('synthBtn');
 const synthBtnText = $('synthBtnText');
@@ -190,8 +195,23 @@ function updateKeyNotice() {
   const configured = hasKey(prefs.engine);
   keyNotice.hidden = configured;
   if (!configured) {
-    const engineName = t(prefs.engine === 'fish' ? 'engine.fish.name' : 'engine.mimo.name');
-    keyNoticeText.textContent = t('notice.noKey', { engine: engineName });
+    keyNoticeText.textContent = t('notice.officialMode');
+  }
+  updateModeIndicator();
+}
+
+// 模式指示：当前引擎填了 Key → “自定义 Key”；没填 → “官方免费额度”，
+// 并在拿到服务端额度头后展示本月剩余额度。
+function updateModeIndicator() {
+  const custom = hasKey(prefs.engine);
+  modePill.textContent = t(custom ? 'mode.custom' : 'mode.official');
+  modePill.classList.toggle('custom', custom);
+  modePill.classList.toggle('official', !custom);
+  const quota = custom ? null : getOfficialQuota();
+  if (quota) {
+    modeQuota.textContent = t('mode.quota', { remaining: quota.remaining, limit: quota.limit });
+  } else {
+    modeQuota.textContent = custom ? '' : t('mode.quotaUnknown');
   }
 }
 
@@ -347,10 +367,6 @@ async function auditionVoice(voice, btn) {
     return;
   }
   const settings = getSettings();
-  if (!settings.fishKey) {
-    toast(t('voice.picker.needKey'), 'error');
-    return;
-  }
   const text = textInput.value.trim() || t('voice.picker.auditionText');
   btn.textContent = t('voice.picker.auditioning');
   btn.disabled = true;
@@ -362,6 +378,7 @@ async function auditionVoice(voice, btn) {
       format: prefs.formatFish,
       speed: prefs.speed,
       volumeDb: volumePercentToDb(prefs.volume),
+      // 没填 Key 时留空 → 代理走官方模式（计入官方额度）。
       key: settings.fishKey
     });
     const url = URL.createObjectURL(blob);
@@ -538,7 +555,9 @@ async function loadFishVoices({ force = false, more = false } = {}) {
   }
 
   const settings = getSettings();
-  if (!settings.fishKey) {
+  // 公开列表无需 Key（代理回退官方 Key）；只有「我的音色」必须用用户自己的
+  // Key，因为要查的是用户账号下的私有模型。
+  if (pickerTab === 'mine' && !settings.fishKey) {
     fishVoiceList.replaceChildren();
     fishVoiceMore.hidden = true;
     setPickerStatus(t('voice.picker.needKey'));
@@ -738,6 +757,12 @@ function localizeError(err) {
   const code = err.code || 'unknown';
 
   switch (code) {
+    case 'official_quota_exceeded':
+      return { text: t('errors.officialQuotaExceeded'), detail };
+    case 'official_key_missing':
+      return { text: t('errors.officialKeyMissing'), detail };
+    case 'official_quota_unavailable':
+      return { text: t('errors.officialQuotaUnavailable'), detail };
     case 'invalid_key':
       return { text: t('errors.invalidKey', { status }), detail };
     case 'quota':
@@ -933,13 +958,8 @@ async function handleSynthesize() {
 
   const engine = prefs.engine;
   const settings = getSettings();
+  // 空 Key 不再拦截：不带 Authorization 时代理自动走官方免费额度。
   const key = engine === 'fish' ? settings.fishKey : settings.mimoKey;
-
-  if (!key) {
-    toast(t(engine === 'fish' ? 'errors.noFishKey' : 'errors.noMimoKey'), 'error');
-    updateKeyNotice();
-    return;
-  }
 
   let referenceId = '';
   if (engine === 'fish') {
@@ -1306,3 +1326,6 @@ renderSynthButton();
 checkProxy().then((online) => {
   proxyNotice.hidden = online;
 });
+
+// 任何一次 API 响应带回额度头（含试听、音色列表失败的 429）都会刷新指示器。
+onOfficialQuotaUpdate(() => updateModeIndicator());

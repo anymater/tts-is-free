@@ -42,7 +42,7 @@
       <div class="hero-copy">
         <p class="eyebrow" data-i18n="hero.eyebrow">免费 · 无需安装 · 双引擎</p>
         <h1 data-i18n="hero.title">让文字，开口说话。</h1>
-        <p class="hero-subtitle" data-i18n="hero.subtitle">使用 Fish Audio 与 MiMo TTS 免费合成语音。API Key 只保存在你的浏览器中，不会硬编码或提交到代码仓库。</p>
+        <p class="hero-subtitle" data-i18n="hero.subtitle">使用 Fish Audio 与 MiMo TTS 免费合成语音。不填 API Key 也能直接用官方免费额度；填入自己的 Key 后改用你自己的账号，密钥始终只保存在你的浏览器中。</p>
         <div class="badges">
           <span class="badge accent" data-i18n="hero.badgeFish">Fish Audio · 主引擎</span>
           <span class="badge" data-i18n="hero.badgeMimo">MiMo TTS · 备用</span>
@@ -195,6 +195,11 @@
             </select>
             <p class="help" data-i18n="controls.formatHelp">Fish 默认 mp3；MiMo 默认 wav（如 mp3 失败请切到 wav）。</p>
           </div>
+        </div>
+
+        <div class="mode-row" id="modeRow">
+          <span class="mode-pill" id="modePill">官方免费额度</span>
+          <span class="mode-quota" id="modeQuota"></span>
         </div>
 
         <div class="notice warning" id="keyNotice" hidden>

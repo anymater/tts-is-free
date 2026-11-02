@@ -1,9 +1,12 @@
 // Cloudflare Pages Function for GET /api/voices.
 // Proxies Fish Audio's voice-model list (GET https://api.fish.audio/model)
 // so the browser can offer a real picker instead of a hand-pasted
-// reference_id. Same contract as /api/fish: the browser sends
-// Bearer <FISH_API_KEY> (kept in localStorage only); the key is never
-// stored server-side and never committed to the repo.
+// reference_id. Dual mode: with Bearer <FISH_API_KEY> the caller's own key
+// is used; without Authorization the proxy falls back to the official
+// FISH_OFFICIAL_KEY so the picker works out of the box (the public voice
+// list is NOT counted against the monthly synthesis quota; scope=mine still
+// needs the caller's own key). The official key is never returned to the
+// browser.
 //
 // Query params (all optional):
 //   scope=public|mine   (mine adds self=true: only the caller's own models)
@@ -23,6 +26,8 @@
 // liked, marked }] } — only safe display fields are passed through, and
 // image URLs are restricted to http(s).
 'use strict';
+
+import { resolveApiKey } from './_official.js';
 
 const FISH_MODELS_URL = 'https://api.fish.audio/model';
 // Short timeout: a voice list should answer in seconds. Kept well under
@@ -138,11 +143,6 @@ export async function onRequest(context) {
   const { request } = context;
   if (request.method !== 'GET') return json(405, { error: 'method_not_allowed' });
 
-  const auth = request.headers.get('Authorization');
-  if (!auth || !/^Bearer\s+\S+/.test(auth)) {
-    return json(401, { error: 'missing_api_key', detail: 'Authorization: Bearer <FISH_API_KEY> is required.' });
-  }
-
   const url = new URL(request.url);
   const params = new URLSearchParams();
   params.set('page_size', String(clampInt(url.searchParams.get('page_size'), 20, 1, 50)));
@@ -158,11 +158,15 @@ export async function onRequest(context) {
   if (url.searchParams.get('licensed') === 'true') params.set('licensed', 'true');
   if (url.searchParams.get('scope') === 'mine') params.set('self', 'true');
 
+  // 无 Key 时回退官方 Key（公开列表：不检查也不计额度）。
+  const resolved = await resolveApiKey({ request, env: context.env, provider: 'fish', enforceQuota: false });
+  if (resolved.early) return resolved.early;
+
   let upstream;
   try {
     upstream = await fetch(`${FISH_MODELS_URL}?${params.toString()}`, {
       method: 'GET',
-      headers: { Authorization: auth, Accept: 'application/json' },
+      headers: { Authorization: resolved.auth, Accept: 'application/json' },
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
     });
   } catch (err) {
