@@ -206,13 +206,16 @@ export async function synthesizeMimo({
   return { blob, mime, format: actualFormat, engine: 'mimo' };
 }
 
-export async function fetchFishVoices({ key, scope = 'public', language = '', query = '', pageSize = 20, signal } = {}) {
+export async function fetchFishVoices({ key, scope = 'public', language = '', query = '', tag = '', licensed = false, sortBy = 'score', pageSize = 30, pageNumber = 1, signal } = {}) {
   const params = new URLSearchParams();
   params.set('scope', scope === 'mine' ? 'mine' : 'public');
-  params.set('page_size', String(Math.min(50, Math.max(1, pageSize || 20))));
-  params.set('sort_by', 'task_count');
+  params.set('page_size', String(Math.min(50, Math.max(1, pageSize || 30))));
+  params.set('page_number', String(Math.max(1, pageNumber || 1)));
+  params.set('sort_by', ['task_count', 'created_at'].includes(sortBy) ? sortBy : 'score');
   if (language) params.set('language', language);
   if (query) params.set('q', query);
+  if (tag) params.set('tag', tag);
+  if (licensed) params.set('licensed', 'true');
 
   let response;
   try {

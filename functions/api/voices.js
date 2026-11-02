@@ -9,12 +9,19 @@
 //   scope=public|mine   (mine adds self=true: only the caller's own models)
 //   language=zh         (Fish language filter, e.g. zh / en)
 //   q=<title>           (fuzzy title search)
+//   tag=<tag>           (Fish tag filter, e.g. female / male)
+//   licensed=true       (only Fish-licensed voices; used for 默认声音)
 //   page_size=1..50    (default 20)
 //   page_number>=1     (default 1)
-//   sort_by=task_count|created_at (default task_count: most-used first)
+//   sort_by=score|task_count|created_at (default score: Fish's recommendation rank)
 //
-// Response: { total, items: [{ id, title, description, languages,
-// tags, task_count }] } — only safe display fields are passed through.
+// Response: { total, items: [{ id, title, description, languages, tags,
+// task_count, like_count, mark_count, shared_count, cover_image (resolved
+// to a full https URL when Fish returns a relative R2 path), sample_audio
+// (first training-sample audio URL, '' when none),
+// author: { nickname, avatar } | null, created_at, state, visibility,
+// liked, marked }] } — only safe display fields are passed through, and
+// image URLs are restricted to http(s).
 'use strict';
 
 const FISH_MODELS_URL = 'https://api.fish.audio/model';
@@ -54,6 +61,41 @@ function cleanNumber(value) {
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
 }
 
+function cleanUrl(value) {
+  if (typeof value !== 'string') return '';
+  const url = value.trim();
+  return /^https?:\/\/\S{1,500}$/.test(url) ? url : '';
+}
+
+// Fish returns cover_image as a relative R2 path ("coverimage/<hash>"),
+// not a full URL. Verified 2026-11-02: public-platform.r2.fish.audio
+// serves it as image/jpeg.
+function cleanCoverUrl(value) {
+  if (typeof value !== 'string') return '';
+  const v = value.trim();
+  if (/^https?:\/\/\S{1,500}$/.test(v)) return v;
+  if (/^coverimage\/\S{1,200}$/.test(v)) return `https://public-platform.r2.fish.audio/${v}`;
+  return '';
+}
+
+// First training-sample audio URL, when present. The picker plays this
+// for audition instead of spending a synthesis call.
+function cleanSampleAudio(value) {
+  if (!Array.isArray(value)) return '';
+  for (const s of value) {
+    if (s && typeof s.audio === 'string' && /^https?:\/\/\S{1,500}$/.test(s.audio.trim())) return s.audio.trim();
+  }
+  return '';
+}
+
+function cleanAuthor(value) {
+  if (!value || typeof value !== 'object') return null;
+  const nickname = cleanString(value.nickname, 100);
+  const avatar = cleanUrl(value.avatar);
+  if (!nickname && !avatar) return null;
+  return { nickname, avatar };
+}
+
 function normalizeItem(item) {
   if (!item || typeof item !== 'object') return null;
   const id = cleanString(item._id || item.id, 200);
@@ -64,7 +106,18 @@ function normalizeItem(item) {
     description: cleanString(item.description, 500),
     languages: cleanStringList(item.languages),
     tags: cleanStringList(item.tags),
-    task_count: cleanNumber(item.task_count)
+    task_count: cleanNumber(item.task_count),
+    like_count: cleanNumber(item.like_count),
+    mark_count: cleanNumber(item.mark_count),
+    shared_count: cleanNumber(item.shared_count),
+    cover_image: cleanCoverUrl(item.cover_image),
+    sample_audio: cleanSampleAudio(item.samples),
+    author: cleanAuthor(item.author),
+    created_at: cleanString(item.created_at, 40),
+    state: cleanString(item.state, 20),
+    visibility: cleanString(item.visibility, 20),
+    liked: item.liked === true,
+    marked: item.marked === true
   };
 }
 
@@ -95,11 +148,14 @@ export async function onRequest(context) {
   params.set('page_size', String(clampInt(url.searchParams.get('page_size'), 20, 1, 50)));
   params.set('page_number', String(clampInt(url.searchParams.get('page_number'), 1, 1, 1000)));
   const sortBy = url.searchParams.get('sort_by');
-  params.set('sort_by', sortBy === 'created_at' ? 'created_at' : 'task_count');
+  params.set('sort_by', sortBy === 'task_count' || sortBy === 'created_at' ? sortBy : 'score');
   const title = cleanString(url.searchParams.get('q'), 200);
   if (title) params.set('title', title);
   const language = cleanString(url.searchParams.get('language'), 20);
   if (language) params.set('language', language);
+  const tag = cleanString(url.searchParams.get('tag'), 40);
+  if (tag) params.set('tag', tag);
+  if (url.searchParams.get('licensed') === 'true') params.set('licensed', 'true');
   if (url.searchParams.get('scope') === 'mine') params.set('self', 'true');
 
   let upstream;

@@ -22,7 +22,7 @@ const UPSTREAM_TIMEOUT_MS = 180000;
 
 const SECURITY_HEADERS = {
   'Content-Security-Policy':
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; " +
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; " +
     "media-src 'self' blob: data:; connect-src 'self'; font-src 'self'; object-src 'none'; " +
     "base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
   'X-Content-Type-Options': 'nosniff',
@@ -349,14 +349,54 @@ function normalizeVoiceItem(item) {
   const list = (value) => (Array.isArray(value)
     ? value.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim().slice(0, 40)).slice(0, 20)
     : []);
-  const count = Number(item.task_count);
+  const count = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
+  };
+  const url = (value) => (typeof value === 'string' && /^https?:\/\/\S{1,500}$/.test(value.trim()) ? value.trim() : '');
+  // Fish returns cover_image as a relative R2 path ("coverimage/<hash>"),
+  // not a full URL. Verified 2026-11-02: public-platform.r2.fish.audio
+  // serves it as image/jpeg.
+  const coverUrl = (value) => {
+    if (typeof value !== 'string') return '';
+    const v = value.trim();
+    if (/^https?:\/\/\S{1,500}$/.test(v)) return v;
+    if (/^coverimage\/\S{1,200}$/.test(v)) return `https://public-platform.r2.fish.audio/${v}`;
+    return '';
+  };
+  // First training-sample audio URL, when present. The picker plays this
+  // for audition instead of spending a synthesis call.
+  const sampleAudio = (value) => {
+    if (!Array.isArray(value)) return '';
+    for (const s of value) {
+      if (s && typeof s.audio === 'string' && /^https?:\/\/\S{1,500}$/.test(s.audio.trim())) return s.audio.trim();
+    }
+    return '';
+  };
+  const author = item.author && typeof item.author === 'object'
+    ? {
+      nickname: cleanQueryString(item.author.nickname, 100),
+      avatar: url(item.author.avatar)
+    }
+    : null;
   return {
     id,
     title: cleanQueryString(item.title, 200),
     description: cleanQueryString(item.description, 500),
     languages: list(item.languages),
     tags: list(item.tags),
-    task_count: Number.isFinite(count) && count >= 0 ? Math.floor(count) : null
+    task_count: count(item.task_count),
+    like_count: count(item.like_count),
+    mark_count: count(item.mark_count),
+    shared_count: count(item.shared_count),
+    cover_image: coverUrl(item.cover_image),
+    sample_audio: sampleAudio(item.samples),
+    author: author && (author.nickname || author.avatar) ? author : null,
+    created_at: cleanQueryString(item.created_at, 40),
+    state: cleanQueryString(item.state, 20),
+    visibility: cleanQueryString(item.visibility, 20),
+    liked: item.liked === true,
+    marked: item.marked === true
   };
 }
 
@@ -376,11 +416,15 @@ async function handleVoices(req, res) {
   const params = new URLSearchParams();
   params.set('page_size', String(clampQueryInt(url.searchParams.get('page_size'), 20, 1, 50)));
   params.set('page_number', String(clampQueryInt(url.searchParams.get('page_number'), 1, 1, 1000)));
-  params.set('sort_by', url.searchParams.get('sort_by') === 'created_at' ? 'created_at' : 'task_count');
+  const sortBy = url.searchParams.get('sort_by');
+  params.set('sort_by', sortBy === 'task_count' || sortBy === 'created_at' ? sortBy : 'score');
   const title = cleanQueryString(url.searchParams.get('q'), 200);
   if (title) params.set('title', title);
   const language = cleanQueryString(url.searchParams.get('language'), 20);
   if (language) params.set('language', language);
+  const tag = cleanQueryString(url.searchParams.get('tag'), 40);
+  if (tag) params.set('tag', tag);
+  if (url.searchParams.get('licensed') === 'true') params.set('licensed', 'true');
   if (url.searchParams.get('scope') === 'mine') params.set('self', 'true');
 
   let upstream;

@@ -10,6 +10,8 @@ const SETTINGS_KEY = 'tts_free_settings_v1';
 const HISTORY_KEY = 'tts_free_history_v1';
 const PREFS_KEY = 'tts_free_prefs_v1';
 const VOICES_KEY = 'tts_free_voices_v1';
+const FAVORITES_KEY = 'tts_free_favorites_v1';
+const VOICE_TITLES_KEY = 'tts_free_voice_titles_v1';
 
 function readJSON(key, fallback) {
   try {
@@ -185,7 +187,99 @@ export function clearAllLocalData() {
     localStorage.removeItem(HISTORY_KEY);
     localStorage.removeItem(PREFS_KEY);
     localStorage.removeItem(VOICES_KEY);
+    localStorage.removeItem(FAVORITES_KEY);
+    localStorage.removeItem(VOICE_TITLES_KEY);
   } catch {
     // Ignore storage failures.
   }
+}
+
+/* ---------- voice favorites + title map + recent use ---------- */
+
+function cleanVoiceSnapshot(voice) {
+  if (!voice || typeof voice.id !== 'string' || !voice.id.trim()) return null;
+  const out = { id: voice.id.trim() };
+  if (typeof voice.title === 'string' && voice.title.trim()) out.title = voice.title.trim().slice(0, 200);
+  if (typeof voice.description === 'string' && voice.description.trim()) {
+    out.description = voice.description.trim().slice(0, 500);
+  }
+  if (Array.isArray(voice.languages)) out.languages = voice.languages.filter((v) => typeof v === 'string').slice(0, 20);
+  if (Array.isArray(voice.tags)) out.tags = voice.tags.filter((v) => typeof v === 'string').slice(0, 20);
+  for (const field of ['task_count', 'like_count', 'mark_count']) {
+    if (typeof voice[field] === 'number' && Number.isFinite(voice[field])) out[field] = Math.floor(voice[field]);
+  }
+  if (typeof voice.cover_image === 'string' && /^https?:\/\/\S{1,500}$/.test(voice.cover_image.trim())) {
+    out.cover_image = voice.cover_image.trim();
+  }
+  if (typeof voice.sample_audio === 'string' && /^https?:\/\/\S{1,500}$/.test(voice.sample_audio.trim())) {
+    out.sample_audio = voice.sample_audio.trim();
+  }
+  if (voice.author && typeof voice.author === 'object') {
+    const author = {};
+    if (typeof voice.author.nickname === 'string' && voice.author.nickname.trim()) {
+      author.nickname = voice.author.nickname.trim().slice(0, 100);
+    }
+    if (typeof voice.author.avatar === 'string' && /^https?:\/\/\S{1,500}$/.test(voice.author.avatar.trim())) {
+      author.avatar = voice.author.avatar.trim();
+    }
+    if (author.nickname || author.avatar) out.author = author;
+  }
+  return out;
+}
+
+export function getFavorites() {
+  const raw = readJSON(FAVORITES_KEY, []);
+  if (!Array.isArray(raw)) return [];
+  return raw.map(cleanVoiceSnapshot).filter(Boolean);
+}
+
+export function isFavorite(id) {
+  return getFavorites().some((voice) => voice.id === id);
+}
+
+export function toggleFavorite(voice) {
+  const clean = cleanVoiceSnapshot(voice);
+  if (!clean) return { favorites: getFavorites(), added: false };
+  const current = getFavorites();
+  if (current.some((item) => item.id === clean.id)) {
+    const next = current.filter((item) => item.id !== clean.id);
+    writeJSON(FAVORITES_KEY, next);
+    return { favorites: next, added: false };
+  }
+  const next = [clean, ...current].slice(0, 200);
+  writeJSON(FAVORITES_KEY, next);
+  return { favorites: next, added: true };
+}
+
+export function saveVoiceTitle(id, title) {
+  if (typeof id !== 'string' || !id.trim() || typeof title !== 'string' || !title.trim()) return;
+  const map = readJSON(VOICE_TITLES_KEY, {});
+  const next = map && typeof map === 'object' ? { ...map } : {};
+  next[id.trim()] = title.trim().slice(0, 200);
+  try {
+    writeJSON(VOICE_TITLES_KEY, next);
+  } catch {
+    // Titles are non-critical.
+  }
+}
+
+export function getVoiceTitle(id) {
+  const map = readJSON(VOICE_TITLES_KEY, {});
+  if (!map || typeof map !== 'object') return '';
+  const title = map[id];
+  return typeof title === 'string' ? title : '';
+}
+
+// Recently used Fish voices, newest first, derived from synthesis history.
+export function getRecentFishVoices() {
+  const seen = new Set();
+  const out = [];
+  for (const entry of getHistory()) {
+    if (entry.engine !== 'fish' || typeof entry.voice !== 'string' || !entry.voice.trim()) continue;
+    const id = entry.voice.trim();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, title: getVoiceTitle(id) });
+  }
+  return out;
 }

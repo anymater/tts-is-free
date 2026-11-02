@@ -127,13 +127,30 @@
           </div>
           <div class="voice-picker" id="fishVoicePicker">
             <div class="picker-tabs">
-              <button type="button" class="picker-tab is-active" data-scope="public" data-i18n="voice.picker.popular">热门音色</button>
-              <button type="button" class="picker-tab" data-scope="mine" data-i18n="voice.picker.mine">我的音色</button>
+              <button type="button" class="picker-tab" data-tab="recent" data-i18n="voice.picker.recent">最近使用</button>
+              <button type="button" class="picker-tab is-active" data-tab="explore" data-i18n="voice.picker.explore">探索</button>
+              <button type="button" class="picker-tab" data-tab="default" data-i18n="voice.picker.default">默认声音</button>
+              <button type="button" class="picker-tab" data-tab="mine" data-i18n="voice.picker.mine">我的音色</button>
+              <button type="button" class="picker-tab" data-tab="favorites" data-i18n="voice.picker.favorites">已收藏</button>
               <button type="button" class="link-button picker-refresh" id="fishVoicesRefresh" data-i18n="voice.picker.refresh">刷新</button>
             </div>
-            <input id="fishVoiceSearch" type="search" autocomplete="off" spellcheck="false" data-i18n-placeholder="voice.picker.searchPlaceholder" placeholder="搜索音色名称…">
+            <div class="picker-filters" id="fishVoiceFilters">
+              <input id="fishVoiceSearch" type="search" autocomplete="off" spellcheck="false" data-i18n-placeholder="voice.picker.searchPlaceholder" placeholder="搜索音色名称…">
+              <select id="fishVoiceGender" aria-label="性别筛选">
+                <option value="all" data-i18n="voice.picker.genderAll">全部性别</option>
+                <option value="female" data-i18n="voice.picker.genderFemale">女性</option>
+                <option value="male" data-i18n="voice.picker.genderMale">男性</option>
+              </select>
+              <select id="fishVoiceSort" aria-label="排序">
+                <option value="score" data-i18n="voice.picker.sortScore">综合推荐</option>
+                <option value="task_count" data-i18n="voice.picker.sortHot">最热门</option>
+                <option value="created_at" data-i18n="voice.picker.sortNew">最新</option>
+              </select>
+            </div>
             <p class="help" id="fishVoiceStatus" hidden></p>
             <div class="voice-list" id="fishVoiceList"></div>
+            <button type="button" class="button ghost small picker-more" id="fishVoiceMore" hidden data-i18n="voice.picker.loadMore">加载更多</button>
+            <p class="help" data-i18n="voice.picker.auditionHint">试听会用当前文本（为空时用默认问候语）合成一次。</p>
           </div>
           <div class="label-row picker-manual-label">
             <label for="fishRefInput" data-i18n="voice.fish.refLabel">Reference ID（必填）</label>

@@ -4,14 +4,19 @@ import {
   addFishVoice,
   clearHistory,
   createId,
+  getFavorites,
   getFishVoices,
   getHistory,
   getPrefs,
+  getRecentFishVoices,
   getSettings,
   hasKey,
+  isFavorite,
   removeHistoryEntry,
   saveHistoryEntry,
-  savePrefs
+  savePrefs,
+  saveVoiceTitle,
+  toggleFavorite
 } from './store.js';
 import {
   SynthesisError,
@@ -38,6 +43,10 @@ const fishPresets = $('fishPresets');
 const fishVoiceSearch = $('fishVoiceSearch');
 const fishVoiceStatus = $('fishVoiceStatus');
 const fishVoiceList = $('fishVoiceList');
+const fishVoiceFilters = $('fishVoiceFilters');
+const fishVoiceGender = $('fishVoiceGender');
+const fishVoiceSort = $('fishVoiceSort');
+const fishVoiceMore = $('fishVoiceMore');
 const fishVoicesRefresh = $('fishVoicesRefresh');
 const savePresetBtn = $('savePresetBtn');
 const mimoVoices = $('mimoVoices');
@@ -226,16 +235,26 @@ function renderFishPresets() {
   }
 }
 
-/* ---------- Fish voice picker (browse the Fish Audio library) ---------- */
+/* ---------- Fish voice picker (browse the Fish Audio library) ----------
+   Tabs mirror the official Fish picker (recent / explore / default /
+   mine / favorites) and go one further: audition with your own text,
+   local favorites that need no Fish login, and recent voices derived
+   from this app's synthesis history. */
 
-let pickerScope = 'public';
+let pickerTab = 'explore';
 let pickerQuery = '';
+let pickerGender = 'all';
+let pickerSort = 'score';
 let pickerSeq = 0;
 let pickerSearchTimer = null;
 const pickerCache = new Map();
+let auditionAudio = null;
+let auditionBtn = null;
 
-function pickerCacheKey(scope, query) {
-  return `${scope}|${query}`;
+const API_TABS = new Set(['explore', 'default', 'mine']);
+
+function pickerCacheKey() {
+  return [pickerTab, pickerQuery, pickerGender, pickerSort].join('|');
 }
 
 function setPickerStatus(message) {
@@ -248,95 +267,330 @@ function setPickerStatus(message) {
   }
 }
 
-function syncVoiceRowActive() {
+function formatCount(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '';
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return String(n);
+}
+
+function langLabel(code) {
+  const map = { zh: '中文', en: 'English', ja: '日本語', ko: '한국어', es: 'Español', fr: 'Français', de: 'Deutsch', pt: 'Português', it: 'Italiano', nl: 'Nederlands' };
+  return map[code] || code;
+}
+
+function voiceGender(tags) {
+  const lower = (Array.isArray(tags) ? tags : []).map((tag) => String(tag).toLowerCase());
+  const has = (...words) => lower.some((tag) => words.some((word) => tag.includes(word)));
+  if (has('female', '女性', '女')) return 'female';
+  if (has('male', '男性', '男')) return 'male';
+  return '';
+}
+
+function syncVoiceCardActive() {
   const current = fishRefInput.value.trim();
-  fishVoiceList.querySelectorAll('.voice-row[data-id]').forEach((row) => {
-    row.classList.toggle('is-active', row.dataset.id === current);
+  fishVoiceList.querySelectorAll('.voice-card[data-id]').forEach((card) => {
+    card.classList.toggle('is-active', card.dataset.id === current);
   });
 }
 
-function renderVoiceList(items) {
-  fishVoiceList.replaceChildren();
-  const current = fishRefInput.value.trim();
+function selectVoice(voice) {
+  fishRefInput.value = voice.id;
+  prefs = savePrefs({ fishRef: voice.id });
+  if (voice.title) saveVoiceTitle(voice.id, voice.title);
+  updateFishChipActive();
+  syncVoiceCardActive();
+}
 
-  for (const item of items) {
-    const row = document.createElement('button');
-    row.type = 'button';
-    row.className = 'voice-row';
-    row.dataset.id = item.id;
-    if (item.id === current) row.classList.add('is-active');
-
-    const name = document.createElement('span');
-    name.className = 'voice-row-name';
-    name.textContent = item.title || item.id.slice(0, 12);
-
-    const metaParts = [];
-    if (Array.isArray(item.languages) && item.languages.length) {
-      metaParts.push(item.languages.join(' · '));
-    }
-    if (typeof item.task_count === 'number') {
-      metaParts.push(t('voice.picker.uses', { n: item.task_count }));
-    }
-    const meta = document.createElement('span');
-    meta.className = 'voice-row-meta';
-    meta.textContent = metaParts.join(' · ') || item.id;
-
-    row.append(name, meta);
-    if (item.description) {
-      const desc = document.createElement('span');
-      desc.className = 'voice-row-desc';
-      desc.textContent = item.description;
-      row.append(desc);
-      row.title = item.description;
-    }
-    fishVoiceList.append(row);
+function stopAudition() {
+  if (auditionAudio) {
+    auditionAudio.pause();
+    auditionAudio = null;
+  }
+  if (auditionBtn) {
+    auditionBtn.textContent = t('voice.picker.audition');
+    auditionBtn.disabled = false;
+    auditionBtn = null;
   }
 }
 
-async function loadFishVoices({ force = false } = {}) {
+async function auditionVoice(voice, btn) {
+  if (auditionBtn === btn) {
+    stopAudition();
+    return;
+  }
+  stopAudition();
+  // Official sample first: free, instant, and exactly how the voice
+  // sounds. Only fall back to synthesizing the user's text when the
+  // voice has no sample audio.
+  if (voice.sample_audio) {
+    const audio = new Audio(voice.sample_audio);
+    auditionAudio = audio;
+    auditionBtn = btn;
+    btn.textContent = t('voice.picker.auditionStop');
+    audio.addEventListener('ended', stopAudition);
+    audio.addEventListener('error', () => {
+      stopAudition();
+      toast(t('voice.picker.auditionFailed'), 'error');
+    });
+    try {
+      await audio.play();
+    } catch {
+      stopAudition();
+      toast(t('voice.picker.auditionFailed'), 'error');
+    }
+    return;
+  }
+  const settings = getSettings();
+  if (!settings.fishKey) {
+    toast(t('voice.picker.needKey'), 'error');
+    return;
+  }
+  const text = textInput.value.trim() || t('voice.picker.auditionText');
+  btn.textContent = t('voice.picker.auditioning');
+  btn.disabled = true;
+  auditionBtn = btn;
+  try {
+    const { blob } = await synthesizeFish({
+      text,
+      referenceId: voice.id,
+      format: prefs.formatFish,
+      speed: prefs.speed,
+      volumeDb: volumePercentToDb(prefs.volume),
+      key: settings.fishKey
+    });
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    auditionAudio = audio;
+    btn.disabled = false;
+    btn.textContent = t('voice.picker.auditionStop');
+    audio.addEventListener('ended', () => {
+      URL.revokeObjectURL(url);
+      stopAudition();
+    });
+    audio.addEventListener('error', () => {
+      URL.revokeObjectURL(url);
+      stopAudition();
+      toast(t('voice.picker.auditionFailed'), 'error');
+    });
+    await audio.play();
+  } catch (err) {
+    stopAudition();
+    if (err && err.name !== 'AbortError') toast(t('voice.picker.auditionFailed'), 'error');
+  }
+}
+
+function voiceCard(voice) {
+  const card = document.createElement('article');
+  card.className = 'voice-card';
+  card.dataset.id = voice.id;
+  if (voice.id === fishRefInput.value.trim()) card.classList.add('is-active');
+
+  const avatar = document.createElement('div');
+  avatar.className = 'voice-avatar';
+  const initial = (voice.title || voice.id).trim().slice(0, 1).toUpperCase() || '?';
+  const imgSrc = voice.cover_image || (voice.author && voice.author.avatar) || '';
+  if (imgSrc) {
+    const img = document.createElement('img');
+    img.src = imgSrc;
+    img.alt = '';
+    img.loading = 'lazy';
+    img.addEventListener('error', () => {
+      img.remove();
+      avatar.textContent = initial;
+    });
+    avatar.append(img);
+  } else {
+    avatar.textContent = initial;
+  }
+
+  const body = document.createElement('div');
+  body.className = 'voice-body';
+
+  const nameRow = document.createElement('div');
+  nameRow.className = 'voice-name-row';
+  const name = document.createElement('strong');
+  name.className = 'voice-name';
+  name.textContent = voice.title || voice.id.slice(0, 12);
+  nameRow.append(name);
+  if (voice.author && voice.author.nickname) {
+    const author = document.createElement('span');
+    author.className = 'voice-author';
+    author.textContent = ` · ${voice.author.nickname}`;
+    nameRow.append(author);
+  }
+
+  const tagsRow = document.createElement('div');
+  tagsRow.className = 'voice-tags';
+  const gender = voiceGender(voice.tags);
+  const chips = [];
+  if (Array.isArray(voice.languages)) {
+    for (const lang of voice.languages.slice(0, 2)) chips.push(langLabel(lang));
+  }
+  if (gender === 'female') chips.push(t('voice.picker.genderFemale'));
+  if (gender === 'male') chips.push(t('voice.picker.genderMale'));
+  if (Array.isArray(voice.tags)) {
+    for (const tag of voice.tags.slice(0, 3)) {
+      if (!chips.includes(tag)) chips.push(tag);
+    }
+  }
+  for (const chip of chips.slice(0, 5)) {
+    const el = document.createElement('span');
+    el.className = 'voice-tag';
+    el.textContent = chip;
+    tagsRow.append(el);
+  }
+
+  const stats = document.createElement('div');
+  stats.className = 'voice-stats';
+  const statParts = [];
+  if (typeof voice.task_count === 'number') {
+    statParts.push(t('voice.picker.uses', { n: formatCount(voice.task_count) }));
+  }
+  if (typeof voice.like_count === 'number') {
+    statParts.push(t('voice.picker.likes', { n: formatCount(voice.like_count) }));
+  }
+  if (typeof voice.mark_count === 'number') {
+    statParts.push(t('voice.picker.marks', { n: formatCount(voice.mark_count) }));
+  }
+  stats.textContent = statParts.join(' · ') || voice.id;
+
+  body.append(nameRow);
+  if (voice.description) {
+    const desc = document.createElement('p');
+    desc.className = 'voice-desc';
+    desc.textContent = voice.description;
+    body.append(desc);
+  }
+  if (tagsRow.childElementCount) body.append(tagsRow);
+  body.append(stats);
+
+  const actions = document.createElement('div');
+  actions.className = 'voice-actions';
+  const audition = document.createElement('button');
+  audition.type = 'button';
+  audition.className = 'button ghost small';
+  audition.textContent = t('voice.picker.audition');
+  audition.addEventListener('click', (event) => {
+    event.stopPropagation();
+    auditionVoice(voice, audition);
+  });
+  const use = document.createElement('button');
+  use.type = 'button';
+  use.className = 'button primary small';
+  use.textContent = t('voice.picker.use');
+  use.addEventListener('click', (event) => {
+    event.stopPropagation();
+    selectVoice(voice);
+  });
+  const fav = document.createElement('button');
+  fav.type = 'button';
+  fav.className = 'button ghost small voice-fav';
+  const favored = isFavorite(voice.id);
+  fav.textContent = favored ? t('voice.picker.favorited') : t('voice.picker.favorite');
+  if (favored) fav.classList.add('is-active');
+  fav.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const result = toggleFavorite(voice);
+    fav.textContent = result.added ? t('voice.picker.favorited') : t('voice.picker.favorite');
+    fav.classList.toggle('is-active', result.added);
+    if (pickerTab === 'favorites' && !result.added) loadFishVoices();
+  });
+  actions.append(audition, use, fav);
+
+  card.append(avatar, body, actions);
+  card.addEventListener('click', () => selectVoice(voice));
+  return card;
+}
+
+function renderVoiceList(items, { append = false } = {}) {
+  if (!append) fishVoiceList.replaceChildren();
+  for (const item of items) fishVoiceList.append(voiceCard(item));
+  syncVoiceCardActive();
+}
+
+function updateMoreButton(entry) {
+  const hasMore = Boolean(entry && typeof entry.total === 'number' && entry.items.length < entry.total);
+  fishVoiceMore.hidden = !hasMore;
+  fishVoiceMore.disabled = false;
+}
+
+async function loadFishVoices({ force = false, more = false } = {}) {
+  // Local tabs need no key and no network.
+  if (pickerTab === 'recent') {
+    const items = getRecentFishVoices();
+    renderVoiceList(items);
+    fishVoiceMore.hidden = true;
+    setPickerStatus(items.length ? '' : t('voice.picker.emptyRecent'));
+    return;
+  }
+  if (pickerTab === 'favorites') {
+    const items = getFavorites();
+    renderVoiceList(items);
+    fishVoiceMore.hidden = true;
+    setPickerStatus(items.length ? '' : t('voice.picker.emptyFavorites'));
+    return;
+  }
+
   const settings = getSettings();
   if (!settings.fishKey) {
     fishVoiceList.replaceChildren();
+    fishVoiceMore.hidden = true;
     setPickerStatus(t('voice.picker.needKey'));
     return;
   }
 
-  const key = pickerCacheKey(pickerScope, pickerQuery);
-  if (!force && pickerCache.has(key)) {
-    renderVoiceList(pickerCache.get(key));
-    setPickerStatus(pickerCache.get(key).length ? '' : t('voice.picker.empty'));
+  const key = pickerCacheKey();
+  const cached = pickerCache.get(key);
+  if (!more && !force && cached) {
+    renderVoiceList(cached.items);
+    updateMoreButton(cached);
+    setPickerStatus(cached.items.length ? '' : t('voice.picker.empty'));
     return;
   }
 
+  const page = more && cached ? cached.page + 1 : 1;
   const seq = ++pickerSeq;
-  fishVoiceList.replaceChildren();
-  setPickerStatus(t('voice.picker.loading'));
+  if (!more) {
+    fishVoiceList.replaceChildren();
+    fishVoiceMore.hidden = true;
+    setPickerStatus(t('voice.picker.loading'));
+  } else {
+    fishVoiceMore.disabled = true;
+  }
 
   try {
-    let data = await fetchFishVoices({
+    const params = {
       key: settings.fishKey,
-      scope: pickerScope,
+      scope: pickerTab === 'mine' ? 'mine' : 'public',
       query: pickerQuery,
-      language: pickerScope === 'public' ? 'zh' : ''
-    });
-    // The zh filter is a guess at Fish's language code: if it yields
-    // nothing, fall back to the unfiltered popular list instead of an
-    // empty picker.
-    if (pickerScope === 'public' && !data.items.length) {
-      data = await fetchFishVoices({
-        key: settings.fishKey,
-        scope: pickerScope,
-        query: pickerQuery,
-        language: ''
-      });
+      tag: pickerGender === 'all' ? '' : pickerGender,
+      sortBy: pickerSort,
+      pageSize: 30,
+      pageNumber: page
+    };
+    if (pickerTab === 'default') params.licensed = true;
+    if (pickerTab !== 'mine') params.language = 'zh';
+    let data = await fetchFishVoices(params);
+    // The zh filter can come back empty for narrow queries; fall back to
+    // the unfiltered list instead of an empty picker.
+    if (pickerTab !== 'mine' && page === 1 && !data.items.length) {
+      data = await fetchFishVoices({ ...params, language: '' });
     }
     if (seq !== pickerSeq) return;
-    pickerCache.set(key, data.items);
-    renderVoiceList(data.items);
-    setPickerStatus(data.items.length ? '' : t('voice.picker.empty'));
+    const items = more && cached ? [...cached.items, ...data.items] : data.items;
+    const entry = { items, page, total: data.total };
+    pickerCache.set(key, entry);
+    renderVoiceList(data.items, { append: more });
+    updateMoreButton(entry);
+    // Fish caps its reported total (1000), so a short last page is the
+    // reliable end-of-list signal even when total says otherwise.
+    if (data.items.length < 30) fishVoiceMore.hidden = true;
+    setPickerStatus(items.length ? '' : t('voice.picker.empty'));
   } catch {
     if (seq !== pickerSeq) return;
-    setPickerStatus(t('voice.picker.error'));
+    if (!more) setPickerStatus(t('voice.picker.error'));
+    fishVoiceMore.disabled = false;
   }
 }
 
@@ -800,16 +1054,17 @@ textInput.addEventListener('input', updateCharCount);
 fishRefInput.addEventListener('input', () => {
   prefs = savePrefs({ fishRef: fishRefInput.value });
   updateFishChipActive();
-  syncVoiceRowActive();
+  syncVoiceCardActive();
 });
 
-document.querySelectorAll('#fishVoicePicker .picker-tab[data-scope]').forEach((tab) => {
+document.querySelectorAll('#fishVoicePicker .picker-tab[data-tab]').forEach((tab) => {
   tab.addEventListener('click', () => {
-    if (pickerScope === tab.dataset.scope) return;
-    pickerScope = tab.dataset.scope;
-    document.querySelectorAll('#fishVoicePicker .picker-tab[data-scope]').forEach((other) => {
+    if (pickerTab === tab.dataset.tab) return;
+    pickerTab = tab.dataset.tab;
+    document.querySelectorAll('#fishVoicePicker .picker-tab[data-tab]').forEach((other) => {
       other.classList.toggle('is-active', other === tab);
     });
+    fishVoiceFilters.hidden = !API_TABS.has(pickerTab);
     loadFishVoices();
   });
 });
@@ -818,21 +1073,26 @@ fishVoiceSearch.addEventListener('input', () => {
   window.clearTimeout(pickerSearchTimer);
   pickerSearchTimer = window.setTimeout(() => {
     pickerQuery = fishVoiceSearch.value.trim();
-    loadFishVoices();
+    if (API_TABS.has(pickerTab)) loadFishVoices();
   }, 400);
+});
+
+fishVoiceGender.addEventListener('change', () => {
+  pickerGender = fishVoiceGender.value === 'male' ? 'male' : fishVoiceGender.value === 'female' ? 'female' : 'all';
+  if (API_TABS.has(pickerTab)) loadFishVoices();
+});
+
+fishVoiceSort.addEventListener('change', () => {
+  pickerSort = ['task_count', 'created_at'].includes(fishVoiceSort.value) ? fishVoiceSort.value : 'score';
+  if (API_TABS.has(pickerTab)) loadFishVoices();
 });
 
 fishVoicesRefresh.addEventListener('click', () => {
   loadFishVoices({ force: true });
 });
 
-fishVoiceList.addEventListener('click', (event) => {
-  const row = event.target.closest('.voice-row[data-id]');
-  if (!row) return;
-  fishRefInput.value = row.dataset.id;
-  prefs = savePrefs({ fishRef: row.dataset.id });
-  updateFishChipActive();
-  syncVoiceRowActive();
+fishVoiceMore.addEventListener('click', () => {
+  loadFishVoices({ more: true });
 });
 
 fishPresets.addEventListener('click', (event) => {
