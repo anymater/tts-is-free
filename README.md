@@ -242,6 +242,25 @@ npm run test:cors     # 检查两个上游的 CORS 预检（需要出站网络�
 
 ---
 
+## 命令行 / MCP / Skill 调用
+
+除了网页版，还可以用 CLI 或 MCP 服务器调用合成（零依赖，Node ≥ 20；完整说明见 `SKILL.md`）：
+
+```bash
+# CLI：Fish 合成
+node bin/tts.js "你好世界" --engine fish --voice <reference_id> -o out.mp3
+# CLI：MiMo 合成；文本也支持 --file 或管道 stdin
+node bin/tts.js "Hello" --engine mimo --voice 冰糖 --format wav -o hello.wav
+
+# MCP 服务器（stdio）：Claude Desktop 的 mcpServers 里配 command=node、args=[<仓库绝对路径>/mcp/server.js]，
+# env 里放 FISH_API_KEY / MIMO_API_KEY；提供 tts_synthesize 与 tts_list_voices 两个工具
+node mcp/server.js
+```
+
+Key 只从环境变量读（CLI 也可用 `--fish-key` / `--mimo-key` 显式传入），不要写进代码或提交。
+
+---
+
 ## 免责声明
 
 本项目按“现状”提供，不保证两个第三方 TTS 服务的可用性、免费政策或模型名称长期不变。使用前请阅读并遵守各自服务条款。API Key 的保管责任在用户本人。
