@@ -17,14 +17,14 @@ const MIMO_DEFAULT_MODEL = 'mimo-v2.5-tts';
 
 // ---------- 官方模式（无 Key fallback）+ 免费额度：本地开发镜像 ----------
 // 与 functions/api/_official.js 保持同一套规则（双模式契约、IP 取法、
-// 每 IP 每自然月额度）。区别只在依赖注入：
+// 每 IP 每自然日的字数额度）。区别只在依赖注入：
 //   - 官方 Key：线上是 Pages secrets（context.env.FISH_OFFICIAL_KEY /
 //     MIMO_OFFICIAL_KEY），本地从 process.env 读同名变量。绝不下发给浏览器。
 //   - 额度计数：线上是 KV（TTS_QUOTA_KV）；本地用进程内 Map —— 仅开发用，
 //     重启清零、多实例不共享。FISH_UPSTREAM_URL / MIMO_UPSTREAM_URL 环境变量
 //     用于把上游指向本地 mock 做验证，默认仍是官方 API 地址。
 const OFFICIAL_QUOTA_LIMIT = 500;
-// key: `quota:<ip>:<YYYY-MM>` → 已成功合成次数（仅进程内，重启清零）
+// key: `quota:<ip>:<YYYY-MM-DD>` → 今日已用字数（仅进程内，重启清零）
 const officialQuotaMap = new Map();
 
 function clientIp(req) {
@@ -38,10 +38,16 @@ function clientIp(req) {
   return 'unknown';
 }
 
-function monthBucket(now = Date.now()) {
-  const d = new Date(now);
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+// 自然日桶名（UTC），与 _official.js 一致：必须按 UTC 取日。
+function dayBucket(now = Date.now()) {
+  return new Date(now).toISOString().slice(0, 10);
+}
+
+// 计量入口统一收口：负数/非数字按 0 处理，小数向下取整。
+function charCount(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.floor(n);
 }
 
 function officialBearer(env, provider) {
@@ -50,9 +56,10 @@ function officialBearer(env, provider) {
 }
 
 // 返回 { early: {status, body, headers} } 表示必须直接响应且不得请求上游；
-// 否则返回 { auth, quota }（quota 非空表示官方模式，成功后需记一次数）。
+// 否则返回 { auth, quota }（quota 非空表示官方模式，成功后需按字数记一次账）。
 // enforceQuota=false 用于 /api/voices：列表是公开数据，不检查也不计额度。
-function resolveApiKeyLocal(req, provider, { enforceQuota = true } = {}) {
+// textLength 是本次请求 trimmed 文本字数：已用 + 本次 > 每日额度 → 429 整单拒绝。
+function resolveApiKeyLocal(req, provider, { enforceQuota = true, textLength = 0 } = {}) {
   const custom = getBearer(req);
   if (custom) return { auth: custom, quota: null };
 
@@ -60,14 +67,16 @@ function resolveApiKeyLocal(req, provider, { enforceQuota = true } = {}) {
   if (!bearer) return { early: { status: 503, body: { error: 'official_key_missing' } } };
   if (!enforceQuota) return { auth: bearer, quota: null };
 
-  const key = `quota:${clientIp(req)}:${monthBucket()}`;
+  const chars = charCount(textLength);
+  const key = `quota:${clientIp(req)}:${dayBucket()}`;
   const used = officialQuotaMap.get(key) || 0;
-  if (used >= OFFICIAL_QUOTA_LIMIT) {
+  const remaining = Math.max(0, OFFICIAL_QUOTA_LIMIT - used);
+  if (used + chars > OFFICIAL_QUOTA_LIMIT) {
     return {
       early: {
         status: 429,
-        body: { error: 'official_quota_exceeded' },
-        headers: quotaHeaders(Math.max(0, OFFICIAL_QUOTA_LIMIT - used))
+        body: { error: 'official_quota_exceeded', remaining, limit: OFFICIAL_QUOTA_LIMIT },
+        headers: quotaHeaders(remaining)
       }
     };
   }
@@ -81,10 +90,10 @@ function quotaHeaders(remaining) {
   };
 }
 
-// 官方模式成功交付音频后计数，返回最新额度头。
-function recordOfficialSuccessLocal(quota) {
+// 官方模式成功交付音频后累加本次文本字数，返回最新额度头。
+function recordOfficialSuccessLocal(quota, textLength) {
   if (!quota) return null;
-  const used = (officialQuotaMap.get(quota.key) || 0) + 1;
+  const used = (officialQuotaMap.get(quota.key) || 0) + charCount(textLength);
   officialQuotaMap.set(quota.key, used);
   return quotaHeaders(Math.max(0, OFFICIAL_QUOTA_LIMIT - used));
 }
@@ -335,8 +344,8 @@ async function handleFish(req, res) {
   if (prosody) payload.prosody = prosody;
 
   // 双模式：带 Authorization 用用户自己的 Key（不计数）；不带则走官方 Key +
-  // 每 IP 每自然月额度。缺 Key / 超额直接响应，不请求上游。
-  const resolved = resolveApiKeyLocal(req, 'fish');
+  // 每 IP 每自然日字数额度。缺 Key / 超额直接响应，不请求上游。
+  const resolved = resolveApiKeyLocal(req, 'fish', { textLength: text.length });
   if (resolved.early) {
     sendJson(res, resolved.early.status, resolved.early.body, resolved.early.headers);
     return;
@@ -398,8 +407,8 @@ async function handleFish(req, res) {
     return;
   }
 
-  // 只有成功拿到音频才计入官方额度，并把最新余量写进响应头。
-  const quotaHeadersOut = recordOfficialSuccessLocal(resolved.quota);
+  // 只有成功拿到音频才按字数计入官方额度，并把最新余量写进响应头。
+  const quotaHeadersOut = recordOfficialSuccessLocal(resolved.quota, text.length);
   res.writeHead(200, {
     ...SECURITY_HEADERS,
     'Content-Type': contentType || (format === 'wav' ? 'audio/wav' : 'audio/mpeg'),
@@ -600,7 +609,8 @@ async function handleMimo(req, res) {
   const format = audio.format === 'mp3' ? 'mp3' : 'wav';
 
   // 双模式：与 /api/fish 共用同一个官方额度池。
-  const resolved = resolveApiKeyLocal(req, 'mimo');
+  // 字数口径：本次发往上游的 trimmed messages 总字数（含语速/音量指令），整单预检。
+  const resolved = resolveApiKeyLocal(req, 'mimo', { textLength: totalChars });
   if (resolved.early) {
     sendJson(res, resolved.early.status, resolved.early.body, resolved.early.headers);
     return;
@@ -659,13 +669,13 @@ async function handleMimo(req, res) {
     return;
   }
 
-  // 只有上游确实带回音频才计入官方额度（字段路径与前端 api.js 一致）。
+  // 只有上游确实带回音频才按字数计入官方额度（字段路径与前端 api.js 一致）。
   const audioField = parsed?.choices?.[0]?.message?.audio;
   const hasAudio = Boolean(
     (typeof audioField === 'string' && audioField) ||
     (audioField && typeof audioField.data === 'string' && audioField.data)
   );
-  const quotaHeadersOut = hasAudio ? recordOfficialSuccessLocal(resolved.quota) : null;
+  const quotaHeadersOut = hasAudio ? recordOfficialSuccessLocal(resolved.quota, totalChars) : null;
   sendText(res, 200, raw, 'application/json; charset=utf-8', quotaHeadersOut);
 }
 

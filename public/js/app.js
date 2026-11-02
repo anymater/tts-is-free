@@ -201,7 +201,7 @@ function updateKeyNotice() {
 }
 
 // 模式指示：当前引擎填了 Key → “自定义 Key”；没填 → “官方免费额度”，
-// 并在拿到服务端额度头后展示本月剩余额度。
+// 并在拿到服务端额度头后展示今日剩余字数。
 function updateModeIndicator() {
   const custom = hasKey(prefs.engine);
   modePill.textContent = t(custom ? 'mode.custom' : 'mode.official');
@@ -757,8 +757,12 @@ function localizeError(err) {
   const code = err.code || 'unknown';
 
   switch (code) {
-    case 'official_quota_exceeded':
-      return { text: t('errors.officialQuotaExceeded'), detail };
+    case 'official_quota_exceeded': {
+      // 代理的 429 一定带回今日剩余字数；拿不到时按 0 处理，
+      // 保证提示里不会出现未替换的 {remaining} 占位符。
+      const remaining = Number.isFinite(err.remaining) && err.remaining >= 0 ? err.remaining : 0;
+      return { text: t('errors.officialQuotaExceeded', { remaining }), detail };
+    }
     case 'official_key_missing':
       return { text: t('errors.officialKeyMissing'), detail };
     case 'official_quota_unavailable':

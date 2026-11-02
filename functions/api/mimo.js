@@ -4,8 +4,8 @@
 //   - Browser sends Bearer <MIMO_API_KEY> (localStorage only) → custom mode,
 //     key used as-is, no quota counting, identical to the old contract.
 //   - No Authorization → official mode: the proxy uses the Pages secret
-//     MIMO_OFFICIAL_KEY (context.env) under the same per-IP monthly quota
-//     pool as Fish; the official key is never returned to the browser.
+//     MIMO_OFFICIAL_KEY (context.env) under the same per-IP daily character
+//     quota pool as Fish; the official key is never returned to the browser.
 'use strict';
 
 import { QUOTA_EXPOSE_HEADERS, finalizeQuotaResponse, resolveApiKey } from './_official.js';
@@ -80,7 +80,8 @@ export async function onRequest(context) {
   const format = audio.format === 'mp3' ? 'mp3' : 'wav';
 
   // 与 /api/fish 共用同一个官方额度池（见 ./_official.js）。
-  const resolved = await resolveApiKey({ request, env: context.env, provider: 'mimo' });
+  // 字数口径：本次发往上游的 trimmed messages 总字数（含语速/音量指令），整单预检。
+  const resolved = await resolveApiKey({ request, env: context.env, provider: 'mimo', textLength: totalChars });
   if (resolved.early) return resolved.early;
 
   let upstream;
@@ -113,7 +114,7 @@ export async function onRequest(context) {
     return json(502, { error: 'upstream_error', detail: 'MiMo returned invalid JSON.' });
   }
 
-  // 只有上游确实带回音频才计入官方额度（校验字段路径与前端 api.js 一致）。
+  // 只有上游确实带回音频才按字数计入官方额度（校验字段路径与前端 api.js 一致）。
   const audioField = data?.choices?.[0]?.message?.audio;
   const hasAudio = Boolean(
     (typeof audioField === 'string' && audioField) ||
@@ -124,6 +125,7 @@ export async function onRequest(context) {
       status: 200,
       headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...QUOTA_EXPOSE_HEADERS }
     }),
-    hasAudio ? resolved.quota : null
+    hasAudio ? resolved.quota : null,
+    totalChars
   );
 }

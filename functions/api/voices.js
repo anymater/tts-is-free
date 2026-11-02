@@ -4,7 +4,7 @@
 // reference_id. Dual mode: with Bearer <FISH_API_KEY> the caller's own key
 // is used; without Authorization the proxy falls back to the official
 // FISH_OFFICIAL_KEY so the picker works out of the box (the public voice
-// list is NOT counted against the monthly synthesis quota; scope=mine still
+// list is NOT counted against the daily character synthesis quota; scope=mine still
 // needs the caller's own key). The official key is never returned to the
 // browser.
 //

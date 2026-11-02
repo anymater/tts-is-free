@@ -3,8 +3,8 @@
 // Dual mode: the browser may send Bearer <FISH_API_KEY> (kept in localStorage
 // only) — then it is used as-is and nothing is counted. Without Authorization
 // the request falls back to the official key (env FISH_OFFICIAL_KEY) under the
-// per-IP monthly quota in _official.js. The official key never leaves the
-// proxy; only audio/errors are forwarded.
+// per-IP daily character quota in _official.js. The official key never leaves
+// the proxy; only audio/errors are forwarded.
 'use strict';
 
 import { QUOTA_EXPOSE_HEADERS, finalizeQuotaResponse, resolveApiKey } from './_official.js';
@@ -76,8 +76,9 @@ export async function onRequest(context) {
   if (prosody) payload.prosody = prosody;
 
   // 解析本次请求应使用的 Authorization：自定义 Key 原样透传；无 Key 走
-  // 官方 Key + 额度。缺官方 Key / 缺 KV → 503，超额 → 429，均不请求上游。
-  const resolved = await resolveApiKey({ request, env: context.env, provider: 'fish' });
+  // 官方 Key + 每日字数额度。缺官方 Key / 缺 KV → 503，超额 → 429，均不请求上游。
+  // 预检按整单字数（trimmed text.length）判断，不做部分合成。
+  const resolved = await resolveApiKey({ request, env: context.env, provider: 'fish', textLength: text.length });
   if (resolved.early) return resolved.early;
 
   let upstream;
@@ -110,7 +111,7 @@ export async function onRequest(context) {
   if (buffer.byteLength > MAX_UPSTREAM_BYTES) return json(502, { error: 'upstream_too_large' });
   if (!buffer.byteLength) return json(502, { error: 'empty_audio', detail: 'Fish Audio returned no audio.' });
 
-  // 只有成功拿到音频才计入官方额度。
+  // 只有成功拿到音频才按字数计入官方额度。
   return finalizeQuotaResponse(
     new Response(buffer, {
       status: 200,
@@ -121,6 +122,7 @@ export async function onRequest(context) {
         ...QUOTA_EXPOSE_HEADERS
       }
     }),
-    resolved.quota
+    resolved.quota,
+    text.length
   );
 }

@@ -1,12 +1,15 @@
 import { API } from './config.js';
 
 export class SynthesisError extends Error {
-  constructor(code, { status = 0, detail = '', cause = null } = {}) {
+  constructor(code, { status = 0, detail = '', remaining = null, limit = null, cause = null } = {}) {
     super(code);
     this.name = 'SynthesisError';
     this.code = code;
     this.status = status;
     this.detail = detail;
+    // 官方 429 带回的剩余字数/上限，用于提示「今日还剩 N 字」。
+    this.remaining = remaining;
+    this.limit = limit;
     this.cause = cause;
   }
 }
@@ -55,10 +58,15 @@ async function readErrorPayload(response) {
   const text = await response.text().catch(() => '');
   let serverCode = '';
   let detail = '';
+  let remaining = null;
+  let limit = null;
   if (text) {
     try {
       const data = JSON.parse(text);
       if (typeof data?.error === 'string' && SERVER_ERROR_CODES.has(data.error)) serverCode = data.error;
+      // 429 JSON 附带今日剩余字数/上限（单位：字）。
+      if (Number.isFinite(data?.remaining)) remaining = data.remaining;
+      if (Number.isFinite(data?.limit)) limit = data.limit;
       const candidate = data?.detail || data?.error?.message || data?.error || data?.message;
       if (typeof candidate === 'string') detail = candidate.slice(0, 600);
       else if (candidate && typeof candidate === 'object') detail = JSON.stringify(candidate).slice(0, 600);
@@ -66,7 +74,7 @@ async function readErrorPayload(response) {
       detail = text.slice(0, 600);
     }
   }
-  return { serverCode, detail };
+  return { serverCode, detail, remaining, limit };
 }
 
 async function requestJson(path, key, payload, signal, engine) {
@@ -90,10 +98,12 @@ async function requestJson(path, key, payload, signal, engine) {
   applyQuotaHeaders(response.headers);
 
   if (!response.ok) {
-    const { serverCode, detail } = await readErrorPayload(response);
+    const { serverCode, detail, remaining, limit } = await readErrorPayload(response);
     throw new SynthesisError(serverCode || mapStatus(response.status, engine), {
       status: response.status,
-      detail
+      detail,
+      remaining,
+      limit
     });
   }
 

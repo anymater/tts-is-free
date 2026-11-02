@@ -4,15 +4,18 @@
 //     不占官方额度、不计数（与旧行为完全一致）。
 //   - 浏览器不带 Authorization → 官方模式：使用 Pages 项目 secrets 里的
 //     官方 Key（FISH_OFFICIAL_KEY / MIMO_OFFICIAL_KEY，经 context.env 注入，
-//     绝不返回给浏览器），并按 IP × 自然月计数。
-// 额度：每个 IP 每个自然月 OFFICIAL_QUOTA_LIMIT 次成功合成，Fish 与 MiMo
-// 共用同一个池；只有上游成功返回音频才计数；计数存 KV（binding 名
-// TTS_QUOTA_KV，key 形如 quota:<ip>:<YYYY-MM>）。
+//     绝不返回给浏览器），并按 IP × 自然日计数。
+// 额度：每个 IP 每个自然日 OFFICIAL_QUOTA_LIMIT 个字的成功合成，Fish 与 MiMo
+// 共用同一个池；计量单位是「字数」（本次请求 trimmed 文本的 .length，与前端
+// 字符计数同口径）；只有上游成功返回音频才计数；调用前先按整单字数预检，
+// 预检不过就整单拒绝（不做部分合成）。计数存 KV（binding 名 TTS_QUOTA_KV，
+// key 形如 quota:<ip>:<YYYY-MM-DD>，按 UTC 取日）。
 // 容错 fail-closed（防止官方 Key 被刷爆）：官方 Key 未配置 → 503
 // official_key_missing；KV binding 缺失或读写失败 → 503
 // official_quota_unavailable。自定义模式永不触发这两种错误。
 // 本地开发服务器 server.js 用 process.env + 进程内 Map 镜像同一套规则。
 
+// 每个 IP 每个自然日可用的字数（不是次数）。
 export const OFFICIAL_QUOTA_LIMIT = 500;
 
 // 让浏览器 fetch 能读到自定义的 X-Official-Quota-* 响应头。
@@ -38,21 +41,27 @@ export function clientIp(request) {
   return 'unknown';
 }
 
-// 自然月桶名，例如 2026-11。
-export function monthBucket(now = Date.now()) {
-  const d = new Date(now);
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+// 自然日桶名（UTC），例如 2026-11-02。必须按 UTC 取日，
+// 否则 Workers（UTC）与本地（本机时区）会在每天 00:00~08:00 这段错位。
+export function dayBucket(now = Date.now()) {
+  return new Date(now).toISOString().slice(0, 10);
 }
 
 function quotaKey(ip, now) {
-  return `quota:${ip}:${monthBucket(now)}`;
+  return `quota:${ip}:${dayBucket(now)}`;
 }
 
-// 桶截止到下月 1 日 00:00（UTC），KV 自动过期。
-function monthExpiry(now = Date.now()) {
+// 桶截止到次日 UTC 00:00，KV 自动过期（旧的自然月 key 无人再读，靠 TTL/空置自然孤儿化）。
+function dayExpiry(now = Date.now()) {
   const d = new Date(now);
-  return Math.floor(new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime() / 1000);
+  return Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1) / 1000);
+}
+
+// 计量入口统一收口：负数/非数字按 0 处理，小数向下取整。
+function charCount(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.floor(n);
 }
 
 function officialBearer(env, provider) {
@@ -60,9 +69,10 @@ function officialBearer(env, provider) {
   return typeof key === 'string' && key.trim() ? `Bearer ${key.trim()}` : null;
 }
 
-function errResponse(status, error, extraHeaders) {
+// extra：追加进 JSON body 的字段（如 429 的 remaining / limit）。
+function errResponse(status, error, extra, extraHeaders) {
   return {
-    early: new Response(JSON.stringify({ error }), {
+    early: new Response(JSON.stringify({ error, ...(extra || {}) }), {
       status,
       headers: {
         'Content-Type': 'application/json; charset=utf-8',
@@ -81,7 +91,9 @@ function errResponse(status, error, extraHeaders) {
 //                                 finalizeQuotaResponse 计数。
 // enforceQuota=false 用于 /api/voices：公开列表不检查也不计额度
 // （仍要求官方 Key 存在，缺 Key 一律 503）。
-export async function resolveApiKey({ request, env, provider, enforceQuota = true }) {
+// textLength 是本次请求 trimmed 文本的字数，用于「字数」预检：
+// 已用字数 + 本次字数 > 每日额度 → 429 整单拒绝，不做部分合成。
+export async function resolveApiKey({ request, env, provider, textLength = 0, enforceQuota = true }) {
   const custom = getCustomAuth(request);
   if (custom) return { auth: custom, official: false, quota: null };
 
@@ -94,6 +106,7 @@ export async function resolveApiKey({ request, env, provider, enforceQuota = tru
   const kv = env && env.TTS_QUOTA_KV;
   if (!kv || typeof kv.get !== 'function') return errResponse(503, 'official_quota_unavailable');
 
+  const chars = charCount(textLength);
   const ip = clientIp(request);
   const key = quotaKey(ip);
   let used;
@@ -103,23 +116,29 @@ export async function resolveApiKey({ request, env, provider, enforceQuota = tru
   } catch {
     return errResponse(503, 'official_quota_unavailable');
   }
-  if (used >= OFFICIAL_QUOTA_LIMIT) {
+  const remaining = Math.max(0, OFFICIAL_QUOTA_LIMIT - used);
+  if (used + chars > OFFICIAL_QUOTA_LIMIT) {
     return errResponse(429, 'official_quota_exceeded', {
+      limit: OFFICIAL_QUOTA_LIMIT,
+      remaining
+    }, {
       'X-Official-Quota-Limit': String(OFFICIAL_QUOTA_LIMIT),
-      'X-Official-Quota-Remaining': '0'
+      // 429 也带回剩余字数，前端据此提示「今日还剩 N 字」。
+      'X-Official-Quota-Remaining': String(remaining)
     });
   }
   return { auth: bearer, official: true, quota: { kv, key } };
 }
 
 // 官方模式成功后计数（best-effort：音频已交付用户，写失败不回滚响应）。
-// 返回响应头里的最新剩余额度，供前端展示。
-export async function recordOfficialSuccess(quota, now = Date.now()) {
+// textLength 是本次成功合成的文本字数。返回响应头里的最新剩余额度，供前端展示。
+export async function recordOfficialSuccess(quota, textLength, now = Date.now()) {
   if (!quota) return null;
+  const chars = charCount(textLength);
   let used = 0;
   try {
-    used = (Number(await quota.kv.get(quota.key)) || 0) + 1;
-    await quota.kv.put(quota.key, String(used), { expiration: monthExpiry(now) });
+    used = (Number(await quota.kv.get(quota.key)) || 0) + chars;
+    await quota.kv.put(quota.key, String(used), { expiration: dayExpiry(now) });
   } catch {
     return null;
   }
@@ -129,10 +148,10 @@ export async function recordOfficialSuccess(quota, now = Date.now()) {
   };
 }
 
-// 成功响应统一出口：官方模式先计数、把最新额度写进响应头；自定义模式原样返回。
-export async function finalizeQuotaResponse(response, quota, now = Date.now()) {
+// 成功响应统一出口：官方模式先按字数计数、把最新额度写进响应头；自定义模式原样返回。
+export async function finalizeQuotaResponse(response, quota, textLength, now = Date.now()) {
   if (!quota) return response;
-  const headers = await recordOfficialSuccess(quota, now);
+  const headers = await recordOfficialSuccess(quota, textLength, now);
   if (headers) {
     for (const [name, value] of Object.entries({ ...headers, ...QUOTA_EXPOSE_HEADERS })) {
       response.headers.set(name, value);
