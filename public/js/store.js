@@ -14,6 +14,7 @@ const VOICES_KEY = 'tts_free_voices_v1';
 const FAVORITES_KEY = 'tts_free_favorites_v1';
 const VOICE_TITLES_KEY = 'tts_free_voice_titles_v1';
 const DRAFT_KEY = 'tts_free_draft_v1';
+const PICKER_KEY = 'tts_free_picker_v1';
 
 function readJSON(key, fallback) {
   try {
@@ -218,6 +219,32 @@ export function saveDraftText(text) {
   }
 }
 
+// Voice picker browse state (tab, gender, sort, search): the last state
+// the user left the picker in, restored on load. Kept separate from
+// prefs because getPrefs() whitelists its own fields.
+const PICKER_TABS = ['recent', 'explore', 'default', 'mine', 'favorites'];
+const PICKER_GENDERS = ['all', 'female', 'male'];
+const PICKER_SORTS = ['score', 'task_count', 'created_at'];
+
+export function getPickerState() {
+  const raw = readJSON(PICKER_KEY, {});
+  const source = raw && typeof raw === 'object' ? raw : {};
+  return {
+    tab: PICKER_TABS.includes(source.tab) ? source.tab : 'explore',
+    gender: PICKER_GENDERS.includes(source.gender) ? source.gender : 'all',
+    sort: PICKER_SORTS.includes(source.sort) ? source.sort : 'score',
+    query: typeof source.query === 'string' ? source.query.slice(0, 200) : ''
+  };
+}
+
+export function savePickerState(patch) {
+  try {
+    writeJSON(PICKER_KEY, { ...getPickerState(), ...patch });
+  } catch {
+    // Ignore storage failures: picker state is a convenience.
+  }
+}
+
 export function clearAllLocalData() {
   try {
     localStorage.removeItem(SETTINGS_KEY);
@@ -227,6 +254,7 @@ export function clearAllLocalData() {
     localStorage.removeItem(FAVORITES_KEY);
     localStorage.removeItem(VOICE_TITLES_KEY);
     localStorage.removeItem(DRAFT_KEY);
+    localStorage.removeItem(PICKER_KEY);
   } catch {
     // Ignore storage failures.
   }

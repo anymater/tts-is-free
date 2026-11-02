@@ -9,6 +9,7 @@ import {
   getFavorites,
   getFishVoices,
   getHistory,
+  getPickerState,
   getPrefs,
   getRecentFishVoices,
   getSettings,
@@ -17,6 +18,7 @@ import {
   removeHistoryEntry,
   saveDraftText,
   saveHistoryEntry,
+  savePickerState,
   savePrefs,
   saveVoiceTitle,
   toggleFavorite
@@ -1099,6 +1101,7 @@ document.querySelectorAll('#fishVoicePicker .picker-tab[data-tab]').forEach((tab
   tab.addEventListener('click', () => {
     if (pickerTab === tab.dataset.tab) return;
     pickerTab = tab.dataset.tab;
+    savePickerState({ tab: pickerTab });
     document.querySelectorAll('#fishVoicePicker .picker-tab[data-tab]').forEach((other) => {
       other.classList.toggle('is-active', other === tab);
     });
@@ -1111,17 +1114,20 @@ fishVoiceSearch.addEventListener('input', () => {
   window.clearTimeout(pickerSearchTimer);
   pickerSearchTimer = window.setTimeout(() => {
     pickerQuery = fishVoiceSearch.value.trim();
+    savePickerState({ query: pickerQuery });
     if (API_TABS.has(pickerTab)) loadFishVoices();
   }, 400);
 });
 
 fishVoiceGender.addEventListener('change', () => {
   pickerGender = fishVoiceGender.value === 'male' ? 'male' : fishVoiceGender.value === 'female' ? 'female' : 'all';
+  savePickerState({ gender: pickerGender });
   if (API_TABS.has(pickerTab)) loadFishVoices();
 });
 
 fishVoiceSort.addEventListener('change', () => {
   pickerSort = ['task_count', 'created_at'].includes(fishVoiceSort.value) ? fishVoiceSort.value : 'score';
+  savePickerState({ sort: pickerSort });
   if (API_TABS.has(pickerTab)) loadFishVoices();
 });
 
@@ -1275,6 +1281,22 @@ if (!textInput.value) {
   if (draft) textInput.value = draft;
 }
 syncFormFromPrefs();
+// Restore the picker browse state before the first load, so the picker
+// opens exactly where the user left it (tab, filters, search).
+{
+  const pickerState = getPickerState();
+  pickerTab = pickerState.tab;
+  pickerGender = pickerState.gender;
+  pickerSort = pickerState.sort;
+  pickerQuery = pickerState.query;
+  document.querySelectorAll('#fishVoicePicker .picker-tab[data-tab]').forEach((tab) => {
+    tab.classList.toggle('is-active', tab.dataset.tab === pickerTab);
+  });
+  fishVoiceFilters.hidden = !API_TABS.has(pickerTab);
+  fishVoiceSearch.value = pickerQuery;
+  fishVoiceGender.value = pickerGender;
+  fishVoiceSort.value = pickerSort;
+}
 selectEngine(prefs.engine, { persist: false });
 updateCharCount();
 updateHistorySubtitle();
